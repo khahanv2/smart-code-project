@@ -394,6 +394,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả đăng nhập")
 
+		// Đánh dấu tài khoản thất bại trong processor
+		if accountProcessor != nil {
+			accountProcessor.MarkFailed(username)
+		}
+
 		resultChan <- AccountResult{
 			Username:      username,
 			Password:      password,
@@ -409,6 +414,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra nếu có lỗi trong response
 		if loginResponse.Error.Code > 0 || loginResponse.Error.Message != "" {
 			logger.Log.Error().Str("username", username).Str("message", loginResponse.Error.Message).Msg("Đăng nhập thất bại")
+
+			// Đánh dấu tài khoản thất bại trong processor
+			if accountProcessor != nil {
+				accountProcessor.MarkFailed(username)
+			}
 
 			resultChan <- AccountResult{
 				Username:      username,
@@ -426,6 +436,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra Data.IsSuccess nếu có (phiên bản API cũ)
 		if loginResponse.Data.IsSuccess == false && loginResponse.Data.Message != "" {
 			logger.Log.Error().Str("username", username).Str("message", loginResponse.Data.Message).Msg("Đăng nhập thất bại")
+
+			// Đánh dấu tài khoản thất bại trong processor
+			if accountProcessor != nil {
+				accountProcessor.MarkFailed(username)
+			}
+
 			resultChan <- AccountResult{
 				Username:      username,
 				Password:      password,
@@ -442,6 +458,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra Data.AccountID và Data.CookieID (phiên bản API mới)
 		if loginResponse.Data.AccountID == "" || loginResponse.Data.CookieID == "" {
 			logger.Log.Error().Str("username", username).Msg("Đăng nhập thất bại: Không có thông tin tài khoản")
+
+			// Đánh dấu tài khoản thất bại trong processor
+			if accountProcessor != nil {
+				accountProcessor.MarkFailed(username)
+			}
 
 			resultChan <- AccountResult{
 				Username:      username,
@@ -465,6 +486,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi cập nhật thông tin sau đăng nhập")
 		// Vẫn thành công đăng nhập, và đã được coi là thành công
+
+		// Đánh dấu tài khoản thành công trong processor
+		if accountProcessor != nil {
+			accountProcessor.MarkSuccess(username)
+		}
+
 		resultChan <- AccountResult{
 			Username:      username,
 			Password:      password,
@@ -517,6 +544,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	accessResult, err := cli.CheckTransactionAccess()
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi kiểm tra quyền truy cập")
+
+		// Đánh dấu tài khoản thành công trong processor
+		if accountProcessor != nil {
+			accountProcessor.MarkSuccess(username)
+		}
+
 		// Gửi kết quả với thông tin số dư
 		resultChan <- AccountResult{
 			Username:      username,
@@ -598,6 +631,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 					// Nếu tìm thấy giao dịch nạp tiền, lưu thông tin để trả về
 					if lastDepositTime != "" {
 						logger.Log.Info().Float64("lastDepositAmount", lastDepositAmount).Str("lastDepositTime", lastDepositTime).Str("lastDepositTxCode", lastDepositTxCode).Msg("\033[1;32mTìm thấy giao dịch nạp tiền gần nhất: %.2f VND vào %s [%s]\033[0m")
+
+						// Đánh dấu tài khoản thành công trong processor
+						if accountProcessor != nil {
+							accountProcessor.MarkSuccess(username)
+						}
 
 						// Gửi kết quả với thông tin số dư và giao dịch nạp tiền gần nhất
 						resultChan <- AccountResult{
