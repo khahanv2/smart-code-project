@@ -24,30 +24,368 @@ echo -e "${GREEN}1. Biên dịch batch_login...${NC}"
 cd "$AUTOLOGIN_DIR"
 go build -o batch_login ./cmd/batch_login/main.go
 
-# 2. Sửa file main.go để loại bỏ phụ thuộc vào accountprocessor
-echo -e "${GREEN}2. Sửa file main.go...${NC}"
+# 2. Tạo lại file main.go từ đầu
+echo -e "${GREEN}2. Tạo lại file main.go...${NC}"
 cd "$WEB_DIR"
 
-# Tạo bản sao của main.go trước khi sửa
-cp main.go main.go.bak
+# Sao lưu file cũ
+cp main.go main.go.original.bak
 
-# Loại bỏ hoàn toàn dòng import accountprocessor
-grep -v "accountprocessor" main.go > main.go.tmp
-mv main.go.tmp main.go
+# Tạo file mới hoàn toàn
+cat > main.go << 'EOF'
+package main
 
-# Đọc nội dung hiện tại của file
-content=$(cat main.go)
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
+	"time"
 
-# Thay đổi kiểu dữ liệu và các lời gọi
-content=$(echo "$content" | sed 's/\*accountprocessor.AccountProcessor/interface{}/g')
-content=$(echo "$content" | sed 's/accountprocessor.NewAccountProcessor()/nil/g')
-content=$(echo "$content" | sed 's/job.Processor.GetTotalAccounts()/job.TotalAccounts/g')
-content=$(echo "$content" | sed 's/job.Processor.GetSuccessAccounts()/job.SuccessCount/g')
-content=$(echo "$content" | sed 's/job.Processor.GetFailedAccounts()/job.FailCount/g')
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
+)
 
-# Ghi lại nội dung đã sửa
-echo "$content" > main.go.tmp
-mv main.go.tmp main.go
+// Job represents a processing job
+type Job struct {
+	ID              string      `json:"id"`
+	Status          string      `json:"status"` // "pending", "processing", "completed", "failed"
+	UploadedFile    string      `json:"uploadedFile"`
+	ProxyFile       string      `json:"proxyFile"`
+	Workers         int         `json:"workers"`
+	StartTime       time.Time   `json:"startTime"`
+	EndTime         time.Time   `json:"endTime"`
+	SuccessFile     string      `json:"successFile"`
+	FailFile        string      `json:"failFile"`
+	Progress        float64     `json:"progress"`
+	Processor       interface{} `json:"-"`
+	TotalAccounts   int         `json:"totalAccounts"`
+	SuccessCount    int         `json:"successCount"`
+	FailCount       int         `json:"failCount"`
+	ProcessingCount int         `json:"processingCount"`
+}
+
+var (
+	jobs        = make(map[string]*Job)
+	jobsMutex   sync.RWMutex
+	clients     = make(map[string][]*websocket.Conn)
+	clientMutex sync.RWMutex
+	upgrader    = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+)
+
+func main() {
+	// Tạo các thư mục cần thiết
+	os.MkdirAll("uploads", os.ModePerm)
+	os.MkdirAll("results", os.ModePerm)
+
+	r := gin.Default()
+
+	// Cấu hình CORS
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+
+	// Endpoint API
+	api := r.Group("/api")
+	{
+		api.GET("/jobs", getJobs)
+		api.POST("/jobs", createJob)
+		api.GET("/jobs/:id", getJob)
+		api.GET("/jobs/:id/download/:type", downloadResult)
+		api.GET("/ws/jobs/:id", wsJobStatus)
+	}
+
+	// Phục vụ file tĩnh
+	r.Static("/uploads", "./uploads")
+	r.Static("/results", "./results")
+	r.Static("/", "./frontend/build")
+
+	r.NoRoute(func(c *gin.Context) {
+		c.File("./frontend/build/index.html")
+	})
+
+	fmt.Println("Server started on :8080")
+	r.Run(":8080")
+}
+
+func getJobs(c *gin.Context) {
+	jobsMutex.RLock()
+	defer jobsMutex.RUnlock()
+
+	jobsList := make([]*Job, 0, len(jobs))
+	for _, job := range jobs {
+		jobsList = append(jobsList, job)
+	}
+
+	c.JSON(http.StatusOK, jobsList)
+}
+
+func getJob(c *gin.Context) {
+	id := c.Param("id")
+
+	jobsMutex.RLock()
+	job, exists := jobs[id]
+	jobsMutex.RUnlock()
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, job)
+}
+
+func createJob(c *gin.Context) {
+	// Parse form
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid form data"})
+		return
+	}
+
+	// Get workers count
+	workersStr := c.Request.FormValue("workers")
+	workers, err := strconv.Atoi(workersStr)
+	if err != nil || workers <= 0 {
+		workers = 10 // Default value
+	}
+
+	// Excel file
+	excelFile, header, err := c.Request.FormFile("excelFile")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Excel file is required"})
+		return
+	}
+	defer excelFile.Close()
+
+	// Create uploads directory if not exists
+	if err := os.MkdirAll("uploads", os.ModePerm); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create uploads directory"})
+		return
+	}
+
+	// Save Excel file
+	excelFilename := filepath.Join("uploads", header.Filename)
+	out, err := os.Create(excelFilename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+		return
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, excelFile)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+		return
+	}
+
+	// Check for proxy file (optional)
+	var proxyFilename string
+	if proxyFile, header, err := c.Request.FormFile("proxyFile"); err == nil {
+		defer proxyFile.Close()
+		proxyFilename = filepath.Join("uploads", header.Filename)
+		out, err := os.Create(proxyFilename)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save proxy file"})
+			return
+		}
+		defer out.Close()
+
+		_, err = io.Copy(out, proxyFile)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save proxy file"})
+			return
+		}
+	}
+
+	// Create new job
+	job := &Job{
+		ID:           uuid.New().String(),
+		Status:       "pending",
+		UploadedFile: excelFilename,
+		ProxyFile:    proxyFilename,
+		Workers:      workers,
+		StartTime:    time.Now(),
+		Progress:     0,
+		Processor:    nil,
+	}
+
+	// Store job
+	jobsMutex.Lock()
+	jobs[job.ID] = job
+	jobsMutex.Unlock()
+
+	// Start processing in background
+	go processJob(job)
+
+	// Return job ID
+	c.JSON(http.StatusOK, gin.H{"id": job.ID})
+}
+
+func downloadResult(c *gin.Context) {
+	id := c.Param("id")
+	fileType := c.Param("type")
+
+	jobsMutex.RLock()
+	job, exists := jobs[id]
+	jobsMutex.RUnlock()
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
+	var filePath string
+	if fileType == "success" {
+		filePath = job.SuccessFile
+	} else if fileType == "fail" {
+		filePath = job.FailFile
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid file type"})
+		return
+	}
+
+	if filePath == "" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
+		return
+	}
+
+	c.File(filePath)
+}
+
+func wsJobStatus(c *gin.Context) {
+	id := c.Param("id")
+
+	jobsMutex.RLock()
+	_, exists := jobs[id]
+	jobsMutex.RUnlock()
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
+	}
+
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("Failed to set websocket upgrade: %v", err)
+		return
+	}
+
+	// Register client
+	clientMutex.Lock()
+	if clients[id] == nil {
+		clients[id] = make([]*websocket.Conn, 0)
+	}
+	clients[id] = append(clients[id], conn)
+	clientMutex.Unlock()
+
+	// Remove client on disconnect
+	conn.SetCloseHandler(func(code int, text string) error {
+		clientMutex.Lock()
+		for i, client := range clients[id] {
+			if client == conn {
+				clients[id] = append(clients[id][:i], clients[id][i+1:]...)
+				break
+			}
+		}
+		clientMutex.Unlock()
+		return nil
+	})
+
+	// Keep connection open
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
+}
+
+func processJob(job *Job) {
+	// Mark job as processing
+	jobsMutex.Lock()
+	job.Status = "processing"
+	jobsMutex.Unlock()
+
+	// Broadcast job update
+	broadcastJobUpdate(job)
+
+	// Setup progress callback
+	onProgress := func(progress float64, totalCount, successCount, failCount int) {
+		jobsMutex.Lock()
+		job.Progress = progress
+		job.TotalAccounts = totalCount
+		job.SuccessCount = successCount
+		job.FailCount = failCount
+		jobsMutex.Unlock()
+
+		broadcastJobUpdate(job)
+	}
+
+	// Process
+	defer func() {
+		if r := recover(); r != nil {
+			log.Println("Recovered from panic:", r)
+			jobsMutex.Lock()
+			job.Status = "failed"
+			job.EndTime = time.Now()
+			jobsMutex.Unlock()
+			broadcastJobUpdate(job)
+		}
+	}()
+
+	// Sử dụng SimulateProcessing thay vì ProcessExcelFile cho demo
+	successFile, failFile, err := SimulateProcessing(
+		job.UploadedFile,
+		job.ProxyFile,
+		job.Workers,
+		job.Processor,
+		onProgress,
+	)
+
+	jobsMutex.Lock()
+	defer jobsMutex.Unlock()
+
+	if err != nil {
+		job.Status = "failed"
+		log.Printf("Error processing job: %v", err)
+	} else {
+		job.Status = "completed"
+		job.SuccessFile = successFile
+		job.FailFile = failFile
+	}
+
+	job.EndTime = time.Now()
+	broadcastJobUpdate(job)
+}
+
+func broadcastJobUpdate(job *Job) {
+	// Create a copy for broadcasting
+	jobData, _ := json.Marshal(job)
+
+	clientMutex.RLock()
+	defer clientMutex.RUnlock()
+
+	for _, conn := range clients[job.ID] {
+		conn.WriteMessage(websocket.TextMessage, jobData)
+	}
+}
+EOF
 
 # 3. Tạo file processor.go đơn giản
 echo -e "${GREEN}3. Tạo file processor.go đơn giản...${NC}"
@@ -166,6 +504,6 @@ echo -e "${BLUE}Server đang chạy tại http://localhost:8080${NC}"
 echo -e "${BLUE}Nhấn Ctrl+C để dừng server${NC}"
 
 # Chạy với Go module mode để sử dụng các gói đã cài đặt
-GO111MODULE=on go run main.go processor.go
+go run main.go processor.go
 
 # Script sẽ kết thúc khi server bị dừng 
