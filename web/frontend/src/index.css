@@ -1,0 +1,53 @@
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}
+
+/* Glassmorphism effects */
+.glass-card {
+  background: rgba(255, 255, 255, 0.25);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+}
+
+.terminal {
+  background-color: #1e1e1e;
+  color: #f8f8f8;
+  font-family: 'Consolas', 'Monaco', monospace;
+  padding: 16px;
+  border-radius: 8px;
+  overflow: auto;
+  white-space: pre-wrap;
+  height: 300px;
+}
+
+.terminal .success {
+  color: #8bc34a;
+}
+
+.terminal .error {
+  color: #f44336;
+}
+
+.terminal .warning {
+  color: #ffc107;
+}
+
+.terminal .info {
+  color: #03a9f4;
+} 
