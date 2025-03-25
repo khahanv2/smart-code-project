@@ -29,7 +29,7 @@ func main() {
 
 	fmt.Println("User-Agent:")
 	fmt.Printf("%s\n\n", cli.GetUserAgent())
-	
+
 	fmt.Println("RequestVerificationToken:")
 	fmt.Printf("%s\n\n", cli.GetToken())
 
@@ -38,16 +38,16 @@ func main() {
 	if utils.ExtractCookie(fmt.Sprintf("IT=%s", cookieValue)) != "" {
 		cookieType = "IT"
 	}
-	
+
 	fmt.Printf("Cookie %s:\n", cookieType)
 	fmt.Printf("%s\n\n", cookieValue)
-	
+
 	fmt.Println("FingerIDX (Giả lập):")
 	fmt.Printf("%s\n\n", cli.GetFingerIDX())
-	
+
 	fmt.Println("Tất cả cookies:")
 	fmt.Printf("%s\n", cli.GetAllCookies())
-	
+
 	if idyKey := cli.GetIdyKey(); idyKey != "" {
 		fmt.Println("\nIdyKey (nếu có):")
 		fmt.Printf("%s\n", idyKey)
@@ -74,4 +74,4 @@ func main() {
 		}
 		fmt.Printf("-b '%s=%s'\n", cookieType, cookieValue)
 	}
-} 
+}
