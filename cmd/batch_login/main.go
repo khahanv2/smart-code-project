@@ -462,12 +462,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 			DepositTxCode: "",
 			ExtraData:     extraData,
 		}
-
-		// Cập nhật số tài khoản thành công
-		counterMutex.Lock()
-		successAccounts++
-		counterMutex.Unlock()
-
 		return
 	}
 
@@ -487,12 +481,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 			DepositTxCode: "",
 			ExtraData:     extraData,
 		}
-
-		// Cập nhật số tài khoản thành công
-		counterMutex.Lock()
-		successAccounts++
-		counterMutex.Unlock()
-
 		return
 	}
 
@@ -527,12 +515,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 			DepositTxCode: "",
 			ExtraData:     extraData,
 		}
-
-		// Cập nhật số tài khoản thành công
-		counterMutex.Lock()
-		successAccounts++
-		counterMutex.Unlock()
-
 		return
 	}
 
@@ -615,12 +597,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 							DepositTxCode: lastDepositTxCode,
 							ExtraData:     extraData,
 						}
-
-						// Cập nhật số tài khoản thành công
-						counterMutex.Lock()
-						successAccounts++
-						counterMutex.Unlock()
-
 						return
 					}
 				}
@@ -662,6 +638,10 @@ func getHCMTime(utcTimeStr string) string {
 func main() {
 	// Khởi tạo logger với pretty printing
 	logger.Init("info", true)
+
+	// Khởi tạo biến đếm về 0
+	successAccounts = 0
+	failedAccounts = 0
 
 	// Kiểm tra đường dẫn file Excel từ tham số dòng lệnh
 	if len(os.Args) < 2 {
@@ -857,16 +837,32 @@ func main() {
 	// Goroutine để ghi kết quả vào file Excel
 	var resultMutex sync.Mutex // Mutex để đồng bộ hóa việc ghi file
 
+	// Tạo map để theo dõi tài khoản đã được xử lý
+	processedAccounts := make(map[string]bool)
+
 	go func() {
 		for result := range resultChan {
 			resultMutex.Lock() // Khóa mutex khi xử lý kết quả
 
-			if result.Success {
-				// Cập nhật số tài khoản thành công
-				counterMutex.Lock()
-				successAccounts++
-				counterMutex.Unlock()
+			// Kiểm tra xem tài khoản đã được xử lý chưa để tránh đếm trùng
+			if _, ok := processedAccounts[result.Username]; !ok {
+				// Đánh dấu tài khoản này đã được xử lý
+				processedAccounts[result.Username] = true
 
+				if result.Success {
+					// Cập nhật số tài khoản thành công
+					counterMutex.Lock()
+					successAccounts++
+					counterMutex.Unlock()
+				} else {
+					// Cập nhật số tài khoản thất bại
+					counterMutex.Lock()
+					failedAccounts++
+					counterMutex.Unlock()
+				}
+			}
+
+			if result.Success {
 				// Ghi vào file thành công
 				// Chuẩn bị dữ liệu để ghi: username, password, balance, lastDeposit, depositTime, depositTxCode
 				rowData := []interface{}{
@@ -893,11 +889,6 @@ func main() {
 				// Tăng số dòng cho file thành công
 				successRow++
 			} else {
-				// Cập nhật số tài khoản thất bại
-				counterMutex.Lock()
-				failedAccounts++
-				counterMutex.Unlock()
-
 				// Ghi vào file thất bại
 				// Chuẩn bị dữ liệu để ghi: username, password
 				rowData := []interface{}{result.Username, result.Password}
@@ -946,6 +937,16 @@ func main() {
 	logger.Log.Info().Int("total", totalAccounts).Msg(fmt.Sprintf("Tổng số tài khoản: %d", totalAccounts))
 	logger.Log.Info().Int("success", successAccounts).Msg(fmt.Sprintf("Số tài khoản đăng nhập thành công: %d", successAccounts))
 	logger.Log.Info().Int("failed", failedAccounts).Msg(fmt.Sprintf("Số tài khoản đăng nhập thất bại: %d", failedAccounts))
+
+	// Kiểm tra tổng số tài khoản thành công và thất bại
+	if (successAccounts + failedAccounts) != totalAccounts {
+		logger.Log.Warn().
+			Int("total", totalAccounts).
+			Int("success", successAccounts).
+			Int("failed", failedAccounts).
+			Int("sum", successAccounts+failedAccounts).
+			Msg("Cảnh báo: Tổng số tài khoản thành công và thất bại không bằng tổng số tài khoản")
+	}
 
 	// Tính tỷ lệ thành công
 	var successRate float64 = 0
