@@ -28,11 +28,17 @@ go build -o batch_login ./cmd/batch_login/main.go
 echo -e "${GREEN}2. Sửa file main.go...${NC}"
 cd "$WEB_DIR"
 
+# Tạo bản sao của main.go trước khi sửa
+cp main.go main.go.bak
+
+# Loại bỏ hoàn toàn dòng import accountprocessor
+grep -v "accountprocessor" main.go > main.go.tmp
+mv main.go.tmp main.go
+
 # Đọc nội dung hiện tại của file
 content=$(cat main.go)
 
-# Thay thế import accountprocessor và thay đổi kiểu dữ liệu 
-content=$(echo "$content" | sed 's/github.com\/bongg\/autologin\/internal\/accountprocessor/\/\/ removed/g')
+# Thay đổi kiểu dữ liệu và các lời gọi
 content=$(echo "$content" | sed 's/\*accountprocessor.AccountProcessor/interface{}/g')
 content=$(echo "$content" | sed 's/accountprocessor.NewAccountProcessor()/nil/g')
 content=$(echo "$content" | sed 's/job.Processor.GetTotalAccounts()/job.TotalAccounts/g')
@@ -106,6 +112,7 @@ EOF
 
 # 4. Cài đặt các gói cần thiết
 echo -e "${GREEN}4. Cài đặt các gói Go cần thiết...${NC}"
+cd "$WEB_DIR"
 go get -u github.com/gin-gonic/gin
 go get -u github.com/gin-contrib/cors
 go get -u github.com/google/uuid
@@ -147,13 +154,18 @@ fi
 echo "Build frontend..."
 npm run build
 
-# 7. Chạy web server
-echo -e "${GREEN}7. Khởi động web server...${NC}"
+# 7. Tạo thư mục kết quả nếu chưa tồn tại
+echo -e "${GREEN}7. Chuẩn bị thư mục kết quả...${NC}"
+mkdir -p "$WEB_DIR/results"
+mkdir -p "$WEB_DIR/uploads"
+
+# 8. Chạy web server
+echo -e "${GREEN}8. Khởi động web server...${NC}"
 cd "$WEB_DIR"
 echo -e "${BLUE}Server đang chạy tại http://localhost:8080${NC}"
 echo -e "${BLUE}Nhấn Ctrl+C để dừng server${NC}"
 
 # Chạy với Go module mode để sử dụng các gói đã cài đặt
-GO111MODULE=on go run .
+GO111MODULE=on go run main.go processor.go
 
 # Script sẽ kết thúc khi server bị dừng 
