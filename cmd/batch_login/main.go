@@ -181,11 +181,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		if r := recover(); r != nil {
 			logger.Log.Error().Str("username", username).Interface("error", r).Msg("Có lỗi nghiêm trọng")
 
-			// Cập nhật số tài khoản thất bại
-			counterMutex.Lock()
-			failedAccounts++
-			counterMutex.Unlock()
-
 			resultChan <- AccountResult{
 				Username:  username,
 				Password:  password,
@@ -218,11 +213,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	err := cli.FetchInitialData()
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy dữ liệu ban đầu")
-
-		// Cập nhật số tài khoản thất bại
-		counterMutex.Lock()
-		failedAccounts++
-		counterMutex.Unlock()
 
 		resultChan <- AccountResult{
 			Username:  username,
@@ -391,11 +381,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả đăng nhập")
 
-		// Cập nhật số tài khoản thất bại
-		counterMutex.Lock()
-		failedAccounts++
-		counterMutex.Unlock()
-
 		resultChan <- AccountResult{
 			Username:      username,
 			Password:      password,
@@ -411,11 +396,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra nếu có lỗi trong response
 		if loginResponse.Error.Code > 0 || loginResponse.Error.Message != "" {
 			logger.Log.Error().Str("username", username).Str("message", loginResponse.Error.Message).Msg("Đăng nhập thất bại")
-
-			// Cập nhật số tài khoản thất bại
-			counterMutex.Lock()
-			failedAccounts++
-			counterMutex.Unlock()
 
 			resultChan <- AccountResult{
 				Username:      username,
@@ -450,11 +430,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		if loginResponse.Data.AccountID == "" || loginResponse.Data.CookieID == "" {
 			logger.Log.Error().Str("username", username).Msg("Đăng nhập thất bại: Không có thông tin tài khoản")
 
-			// Cập nhật số tài khoản thất bại
-			counterMutex.Lock()
-			failedAccounts++
-			counterMutex.Unlock()
-
 			resultChan <- AccountResult{
 				Username:      username,
 				Password:      password,
@@ -487,6 +462,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 			DepositTxCode: "",
 			ExtraData:     extraData,
 		}
+
+		// Cập nhật số tài khoản thành công
+		counterMutex.Lock()
+		successAccounts++
+		counterMutex.Unlock()
+
 		return
 	}
 
@@ -506,6 +487,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 			DepositTxCode: "",
 			ExtraData:     extraData,
 		}
+
+		// Cập nhật số tài khoản thành công
+		counterMutex.Lock()
+		successAccounts++
+		counterMutex.Unlock()
+
 		return
 	}
 
@@ -540,6 +527,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 			DepositTxCode: "",
 			ExtraData:     extraData,
 		}
+
+		// Cập nhật số tài khoản thành công
+		counterMutex.Lock()
+		successAccounts++
+		counterMutex.Unlock()
+
 		return
 	}
 
@@ -622,6 +615,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 							DepositTxCode: lastDepositTxCode,
 							ExtraData:     extraData,
 						}
+
+						// Cập nhật số tài khoản thành công
+						counterMutex.Lock()
+						successAccounts++
+						counterMutex.Unlock()
+
 						return
 					}
 				}
@@ -642,11 +641,6 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		DepositTxCode: "",
 		ExtraData:     extraData,
 	}
-
-	// Cập nhật số tài khoản thành công
-	counterMutex.Lock()
-	successAccounts++
-	counterMutex.Unlock()
 }
 
 // getHCMTime chuyển đổi thời gian từ UTC sang múi giờ Hồ Chí Minh
@@ -846,12 +840,6 @@ func main() {
 			// Kiểm tra tài khoản hoặc mật khẩu trống
 			if username == "" || password == "" {
 				logger.Log.Info().Str("username", username).Msg("Bỏ qua dòng có tài khoản hoặc mật khẩu trống")
-
-				// Cập nhật số tài khoản thất bại nếu dòng không đúng định dạng
-				counterMutex.Lock()
-				failedAccounts++
-				counterMutex.Unlock()
-
 				return
 			}
 
@@ -874,6 +862,11 @@ func main() {
 			resultMutex.Lock() // Khóa mutex khi xử lý kết quả
 
 			if result.Success {
+				// Cập nhật số tài khoản thành công
+				counterMutex.Lock()
+				successAccounts++
+				counterMutex.Unlock()
+
 				// Ghi vào file thành công
 				// Chuẩn bị dữ liệu để ghi: username, password, balance, lastDeposit, depositTime, depositTxCode
 				rowData := []interface{}{
@@ -900,6 +893,11 @@ func main() {
 				// Tăng số dòng cho file thành công
 				successRow++
 			} else {
+				// Cập nhật số tài khoản thất bại
+				counterMutex.Lock()
+				failedAccounts++
+				counterMutex.Unlock()
+
 				// Ghi vào file thất bại
 				// Chuẩn bị dữ liệu để ghi: username, password
 				rowData := []interface{}{result.Username, result.Password}
