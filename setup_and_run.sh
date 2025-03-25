@@ -129,11 +129,18 @@ processor_file="$WEB_DIR/processor.go"
 if [ -f "$processor_file" ]; then
     echo -e "${BLUE}Đang cập nhật import accountprocessor...${NC}"
     
-    # Sửa import path để sử dụng local module
-    sed -i 's|github.com/bongg/autologin/internal/accountprocessor|github.com/khahanv2/smart-code-project/autologin/web/internal/accountprocessor|g' "$processor_file"
-    sed -i 's|github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor|github.com/khahanv2/smart-code-project/autologin/web/internal/accountprocessor|g' "$processor_file"
+    # Đọc nội dung hiện tại của file
+    content=$(cat "$processor_file")
     
-    echo -e "${BLUE}Đã cập nhật import paths${NC}"
+    # Tìm dòng import accountprocessor và thay thế bằng đường dẫn tương đối
+    content=$(echo "$content" | sed 's|"github.com/bongg/autologin/internal/accountprocessor"|"./internal/accountprocessor"|g')
+    content=$(echo "$content" | sed 's|"github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor"|"./internal/accountprocessor"|g')
+    content=$(echo "$content" | sed 's|"github.com/khahanv2/smart-code-project/autologin/web/internal/accountprocessor"|"./internal/accountprocessor"|g')
+    
+    # Ghi lại nội dung đã sửa
+    echo "$content" > "$processor_file"
+    
+    echo -e "${BLUE}Đã cập nhật import path thành đường dẫn tương đối './internal/accountprocessor'${NC}"
 else
     echo -e "${RED}Không tìm thấy file processor.go${NC}"
     exit 1
