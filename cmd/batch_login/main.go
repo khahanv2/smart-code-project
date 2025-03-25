@@ -169,11 +169,6 @@ var proxyManager *ProxyManager
 
 // Biến đếm số tài khoản
 var (
-	totalAccounts   int = 0
-	successAccounts int = 0
-	failedAccounts  int = 0
-	// Mutex để bảo vệ biến đếm
-	counterMutex sync.Mutex
 	// Processor cho tài khoản
 	accountProcessor *accountprocessor.AccountProcessor
 )
@@ -667,10 +662,6 @@ func main() {
 	// Khởi tạo Processor cho tài khoản
 	accountProcessor = accountprocessor.NewAccountProcessor()
 
-	// Khởi tạo biến đếm về 0
-	successAccounts = 0
-	failedAccounts = 0
-
 	// Kiểm tra đường dẫn file Excel từ tham số dòng lệnh
 	if len(os.Args) < 2 {
 		logger.Log.Fatal().Msg("Cách sử dụng: batch_login <excel_file_path>")
@@ -868,22 +859,11 @@ func main() {
 		for result := range resultChan {
 			resultMutex.Lock() // Khóa mutex khi xử lý kết quả
 
-			// Kiểm tra xem tài khoản đã được xử lý chưa để tránh đếm trùng
+			// Chỉ ghi kết quả vào file Excel mà không cập nhật biến đếm toàn cục
+			// Việc đếm tài khoản đã được xử lý trong AccountProcessor
 			if _, ok := processedAccounts[result.Username]; !ok {
 				// Đánh dấu tài khoản này đã được xử lý
 				processedAccounts[result.Username] = true
-
-				if result.Success {
-					// Cập nhật số tài khoản thành công
-					counterMutex.Lock()
-					successAccounts++
-					counterMutex.Unlock()
-				} else {
-					// Cập nhật số tài khoản thất bại
-					counterMutex.Lock()
-					failedAccounts++
-					counterMutex.Unlock()
-				}
 			}
 
 			if result.Success {
@@ -933,7 +913,22 @@ func main() {
 				failRow++
 			}
 
-			resultMutex.Unlock() // Mở khóa mutex sau khi hoàn thành
+			// Hiển thị tiến trình từ AccountProcessor
+			totalAccounts := accountProcessor.GetTotalAccounts()
+			successAccounts := accountProcessor.GetSuccessAccounts()
+			failedAccounts := accountProcessor.GetFailedAccounts()
+
+			// In tiến trình
+			if successAccounts+failedAccounts > 0 && totalAccounts > 0 {
+				percent := float64(successAccounts+failedAccounts) / float64(totalAccounts) * 100
+				logger.Log.Info().Msg(fmt.Sprintf("║ Tiến trình: [%-30s] %5.1f%% ║", strings.Repeat("█", int(percent*30/100)), percent))
+			} else {
+				logger.Log.Info().Msg(fmt.Sprintf("║ Tiến trình: [%-30s] %5.1f%% ║", "", 0.0))
+			}
+			logger.Log.Info().Msg(fmt.Sprintf("║ \033[1;32m■\033[0m Thành công: %-3d \033[1;31m□\033[0m Thất bại: %-19d ║", successAccounts, failedAccounts))
+			logger.Log.Info().Msg("╚══════════════════════════════════════════════╝\n")
+
+			resultMutex.Unlock() // Mở khóa mutex khi xử lý xong
 		}
 	}()
 
@@ -960,34 +955,34 @@ func main() {
 	logger.Log.Info().Msg("\n\n╔══════════════════════════════════════════════╗")
 	logger.Log.Info().Msg("║            \033[1mTHỐNG KÊ TÀI KHOẢN\033[0m               ║")
 	logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
-	logger.Log.Info().Int("total", totalAccounts).Msg(fmt.Sprintf("║ \033[1mTổng số tài khoản:\033[0m %-25d ║", totalAccounts))
-	logger.Log.Info().Int("success", successAccounts).Msg(fmt.Sprintf("║ \033[1;32mSố tài khoản đăng nhập thành công:\033[0m %-13d ║", successAccounts))
-	logger.Log.Info().Int("failed", failedAccounts).Msg(fmt.Sprintf("║ \033[1;31mSố tài khoản đăng nhập thất bại:\033[0m %-15d ║", failedAccounts))
+	logger.Log.Info().Int("total", accountProcessor.GetTotalAccounts()).Msg(fmt.Sprintf("║ \033[1mTổng số tài khoản:\033[0m %-25d ║", accountProcessor.GetTotalAccounts()))
+	logger.Log.Info().Int("success", accountProcessor.GetSuccessAccounts()).Msg(fmt.Sprintf("║ \033[1;32mSố tài khoản đăng nhập thành công:\033[0m %-13d ║", accountProcessor.GetSuccessAccounts()))
+	logger.Log.Info().Int("failed", accountProcessor.GetFailedAccounts()).Msg(fmt.Sprintf("║ \033[1;31mSố tài khoản đăng nhập thất bại:\033[0m %-15d ║", accountProcessor.GetFailedAccounts()))
 	logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
 
 	// Kiểm tra tổng số tài khoản thành công và thất bại
-	if (successAccounts + failedAccounts) != totalAccounts {
+	if (accountProcessor.GetSuccessAccounts() + accountProcessor.GetFailedAccounts()) != accountProcessor.GetTotalAccounts() {
 		logger.Log.Warn().
-			Int("total", totalAccounts).
-			Int("success", successAccounts).
-			Int("failed", failedAccounts).
-			Int("sum", successAccounts+failedAccounts).
+			Int("total", accountProcessor.GetTotalAccounts()).
+			Int("success", accountProcessor.GetSuccessAccounts()).
+			Int("failed", accountProcessor.GetFailedAccounts()).
+			Int("sum", accountProcessor.GetSuccessAccounts()+accountProcessor.GetFailedAccounts()).
 			Msg("║ \033[1;33mCảnh báo: Tổng số tài khoản không khớp!\033[0m        ║")
 		logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
 	}
 
 	// Tính tỷ lệ thành công
 	var successRate float64 = 0
-	if totalAccounts > 0 {
-		successRate = float64(successAccounts) / float64(totalAccounts) * 100
+	if accountProcessor.GetTotalAccounts() > 0 {
+		successRate = float64(accountProcessor.GetSuccessAccounts()) / float64(accountProcessor.GetTotalAccounts()) * 100
 	}
 	logger.Log.Info().Float64("rate", successRate).Msg(fmt.Sprintf("║ \033[1mTỷ lệ thành công:\033[0m %.2f%%%-25s ║", successRate, ""))
 
 	// Hiển thị biểu đồ đơn giản bằng ký tự
-	successBar := strings.Repeat("\033[1;32m■\033[0m", successAccounts)
-	failedBar := strings.Repeat("\033[1;31m□\033[0m", failedAccounts)
+	successBar := strings.Repeat("\033[1;32m■\033[0m", accountProcessor.GetSuccessAccounts())
+	failedBar := strings.Repeat("\033[1;31m□\033[0m", accountProcessor.GetFailedAccounts())
 	logger.Log.Info().Msg(fmt.Sprintf("║ \033[1mBiểu đồ:\033[0m %-37s ║", successBar+failedBar))
-	logger.Log.Info().Msg(fmt.Sprintf("║ \033[1;32m■\033[0m Thành công: %-3d \033[1;31m□\033[0m Thất bại: %-19d ║", successAccounts, failedAccounts))
+	logger.Log.Info().Msg(fmt.Sprintf("║ \033[1;32m■\033[0m Thành công: %-3d \033[1;31m□\033[0m Thất bại: %-19d ║", accountProcessor.GetSuccessAccounts(), accountProcessor.GetFailedAccounts()))
 	logger.Log.Info().Msg("╚══════════════════════════════════════════════╝\n")
 
 	logger.Log.Info().Msg("Hoàn thành kiểm tra tài khoản")
@@ -1006,12 +1001,11 @@ func main() {
 	// Hiển thị thống kê cuối cùng
 	accountProcessor.PrintStatistics()
 
-	// Thay thế biến đếm cũ bằng giá trị từ processor
-	totalAccounts = accountProcessor.GetTotalAccounts()
-	successAccounts = accountProcessor.GetSuccessAccounts()
-	failedAccounts = accountProcessor.GetFailedAccounts()
-
 	// In kết quả cuối cùng
+	totalAccounts := accountProcessor.GetTotalAccounts()
+	successAccounts := accountProcessor.GetSuccessAccounts()
+	failedAccounts := accountProcessor.GetFailedAccounts()
+
 	logger.Log.Info().Msg("╔══════════════════════════════════════════════╗")
 	logger.Log.Info().Msg("║           KẾT QUẢ CHẠY BATCH LOGIN          ║")
 	logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
