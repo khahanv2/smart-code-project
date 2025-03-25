@@ -24,9 +24,19 @@ echo -e "${GREEN}1. Biên dịch batch_login...${NC}"
 cd "$AUTOLOGIN_DIR"
 go build -o batch_login ./cmd/batch_login/main.go
 
-# 2. Sao chép accountprocessor vào thư mục web
-echo -e "${GREEN}2. Sao chép accountprocessor vào thư mục web...${NC}"
-# Tạo cấu trúc thư mục trong web
+# 2. Chuẩn bị module cho web
+echo -e "${GREEN}2. Chuẩn bị Go module cho thư mục web...${NC}"
+cd "$WEB_DIR"
+
+# Xác định đúng module name từ go.mod
+MODULE_NAME=$(grep "^module" go.mod | awk '{print $2}')
+if [ -z "$MODULE_NAME" ]; then
+    echo -e "${RED}Không thể xác định tên module từ go.mod${NC}"
+    MODULE_NAME="github.com/khahanv2/smart-code-project/autologin/web"
+    echo -e "${BLUE}Sử dụng tên module mặc định: $MODULE_NAME${NC}"
+fi
+
+# Tạo accountprocessor trong thư mục web
 mkdir -p "$WEB_DIR/internal/accountprocessor"
 
 # Kiểm tra xem thư mục accountprocessor trong thư mục gốc có tồn tại không
@@ -121,8 +131,6 @@ fi
 
 # 3. Sửa lỗi import trong processor.go
 echo -e "${GREEN}3. Cập nhật import paths...${NC}"
-# Chuyển đến thư mục web
-cd "$WEB_DIR"
 
 # Sửa lỗi import trong processor.go
 processor_file="$WEB_DIR/processor.go"
@@ -132,15 +140,16 @@ if [ -f "$processor_file" ]; then
     # Đọc nội dung hiện tại của file
     content=$(cat "$processor_file")
     
-    # Tìm dòng import accountprocessor và thay thế bằng đường dẫn tương đối
-    content=$(echo "$content" | sed 's|"github.com/bongg/autologin/internal/accountprocessor"|"./internal/accountprocessor"|g')
-    content=$(echo "$content" | sed 's|"github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor"|"./internal/accountprocessor"|g')
-    content=$(echo "$content" | sed 's|"github.com/khahanv2/smart-code-project/autologin/web/internal/accountprocessor"|"./internal/accountprocessor"|g')
+    # Tìm dòng import accountprocessor và thay thế bằng đường dẫn chính xác của module
+    content=$(echo "$content" | sed "s|\"github.com/bongg/autologin/internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
+    content=$(echo "$content" | sed "s|\"github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
+    content=$(echo "$content" | sed "s|\"github.com/khahanv2/smart-code-project/autologin/web/internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
+    content=$(echo "$content" | sed "s|\"\./internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
     
     # Ghi lại nội dung đã sửa
     echo "$content" > "$processor_file"
     
-    echo -e "${BLUE}Đã cập nhật import path thành đường dẫn tương đối './internal/accountprocessor'${NC}"
+    echo -e "${BLUE}Đã cập nhật import path thành '$MODULE_NAME/internal/accountprocessor'${NC}"
 else
     echo -e "${RED}Không tìm thấy file processor.go${NC}"
     exit 1
@@ -186,11 +195,13 @@ fi
 echo "Build frontend..."
 npm run build
 
-# 6. Chạy web server
+# 6. Chạy web server với mode cụ thể 
 echo -e "${GREEN}6. Khởi động web server...${NC}"
 cd "$WEB_DIR"
 echo -e "${BLUE}Server đang chạy tại http://localhost:8080${NC}"
 echo -e "${BLUE}Nhấn Ctrl+C để dừng server${NC}"
-go run *.go
+
+# Sử dụng -modfile=none để chạy mà không cần quy tắc strict của Go modules
+GO111MODULE=on go run .
 
 # Script sẽ kết thúc khi server bị dừng 
