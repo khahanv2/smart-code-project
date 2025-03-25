@@ -14,6 +14,7 @@ import (
 	"github.com/bongg/autologin/captcha"
 	"github.com/bongg/autologin/client"
 	"github.com/bongg/autologin/config"
+	"github.com/bongg/autologin/internal/accountprocessor"
 	"github.com/bongg/autologin/logger"
 	"github.com/xuri/excelize/v2"
 )
@@ -173,6 +174,8 @@ var (
 	failedAccounts  int = 0
 	// Mutex để bảo vệ biến đếm
 	counterMutex sync.Mutex
+	// Processor cho tài khoản
+	accountProcessor *accountprocessor.AccountProcessor
 )
 
 // processAccount xử lý đăng nhập và kiểm tra thông tin một tài khoản
@@ -180,6 +183,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Log.Error().Str("username", username).Interface("error", r).Msg("Có lỗi nghiêm trọng")
+
+			// Đánh dấu tài khoản thất bại trong processor
+			if accountProcessor != nil {
+				accountProcessor.MarkFailed(username)
+			}
 
 			resultChan <- AccountResult{
 				Username:  username,
@@ -189,6 +197,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 			}
 		}
 	}()
+
+	// Đánh dấu tài khoản đang được xử lý trong processor
+	if accountProcessor != nil {
+		accountProcessor.MarkProcessing(username)
+	}
 
 	logger.Log.Info().Str("username", username).Msg("\033[1;34m=== BẮT ĐẦU XỬ LÝ TÀI KHOẢN ===\033[0m")
 
@@ -213,6 +226,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	err := cli.FetchInitialData()
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy dữ liệu ban đầu")
+
+		// Đánh dấu tài khoản thất bại trong processor
+		if accountProcessor != nil {
+			accountProcessor.MarkFailed(username)
+		}
 
 		resultChan <- AccountResult{
 			Username:  username,
@@ -606,6 +624,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		}
 	}
 
+	// Đánh dấu tài khoản thành công trong processor
+	if accountProcessor != nil {
+		accountProcessor.MarkSuccess(username)
+	}
+
 	// Gửi kết quả với thông tin số dư
 	resultChan <- AccountResult{
 		Username:      username,
@@ -617,6 +640,8 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		DepositTxCode: "",
 		ExtraData:     extraData,
 	}
+
+	logger.Log.Info().Str("username", username).Msg("\033[1;32mĐĂNG NHẬP THÀNH CÔNG!\033[0m")
 }
 
 // getHCMTime chuyển đổi thời gian từ UTC sang múi giờ Hồ Chí Minh
@@ -638,6 +663,9 @@ func getHCMTime(utcTimeStr string) string {
 func main() {
 	// Khởi tạo logger với pretty printing
 	logger.Init("info", true)
+
+	// Khởi tạo Processor cho tài khoản
+	accountProcessor = accountprocessor.NewAccountProcessor()
 
 	// Khởi tạo biến đếm về 0
 	successAccounts = 0
@@ -695,45 +723,46 @@ func main() {
 	// Đọc file Excel
 	excelFile, err := excelize.OpenFile(excelFilePath)
 	if err != nil {
-		logger.Log.Error().Err(err).Msg("Lỗi khi mở file Excel")
+		logger.Log.Fatal().Err(err).Msg("Không thể mở file Excel")
 		os.Exit(1)
 	}
 	defer excelFile.Close()
 
-	// Lấy tất cả sheet names
-	sheetNames := excelFile.GetSheetList()
-	if len(sheetNames) == 0 {
-		logger.Log.Error().Msg("Không tìm thấy sheet nào trong file Excel")
+	// Đọc tất cả các sheets
+	sheets := excelFile.GetSheetList()
+	if len(sheets) == 0 {
+		logger.Log.Fatal().Msg("Không tìm thấy sheet nào trong file Excel")
 		os.Exit(1)
 	}
 
-	// Sử dụng sheet đầu tiên
-	sheetName := sheetNames[0]
-	logger.Log.Info().Str("sheetName", sheetName).Msg("Sử dụng sheet")
+	// Chọn sheet đầu tiên
+	sheetName := sheets[0]
+	logger.Log.Info().Str("sheet", sheetName).Msg("Đọc dữ liệu từ sheet")
 
-	// Đọc tất cả rows từ sheet
+	// Đọc tất cả các hàng
 	rows, err := excelFile.GetRows(sheetName)
 	if err != nil {
-		logger.Log.Error().Err(err).Msg("Lỗi khi đọc dữ liệu từ sheet")
-		os.Exit(1)
-	}
-
-	// Kiểm tra có dữ liệu không
-	if len(rows) < 2 {
-		logger.Log.Error().Msg("File Excel không có đủ dữ liệu")
+		logger.Log.Fatal().Err(err).Msg("Không thể đọc dữ liệu từ sheet")
 		os.Exit(1)
 	}
 
 	// Bỏ qua hàng đầu tiên (header)
-	if len(rows) > 1 {
+	if len(rows) > 0 {
 		rows = rows[1:]
 	}
 
-	// Cập nhật tổng số tài khoản
-	totalAccounts = len(rows)
+	// Khởi tạo Processor với dữ liệu từ Excel
+	accountProcessor.InitializeFromExcel(rows)
 
-	logger.Log.Info().Int("accountCount", totalAccounts).Msg("Tìm thấy %d tài khoản để xử lý")
+	// Hiển thị thống kê ban đầu
+	accountProcessor.PrintStatistics()
 
+	// Giới hạn số lượng goroutines
+	var wg sync.WaitGroup
+	semaphore := make(chan struct{}, maxWorkers)
+	resultChan := make(chan AccountResult, len(rows))
+
+	// Chuẩn bị file kết quả
 	// Tạo thư mục kết quả nếu chưa tồn tại
 	resultsDir := "results"
 	if _, statErr := os.Stat(resultsDir); os.IsNotExist(statErr) {
@@ -793,11 +822,6 @@ func main() {
 	// Tạo biến đếm số dòng trong mỗi file
 	successRow := 2 // Bắt đầu từ dòng 2 (sau header)
 	failRow := 2
-
-	// Giới hạn số lượng goroutines
-	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, maxWorkers)
-	resultChan := make(chan AccountResult, len(rows))
 
 	// Xử lý từng tài khoản
 	for _, row := range rows {
@@ -964,6 +988,36 @@ func main() {
 	failedBar := strings.Repeat("\033[1;31m□\033[0m", failedAccounts)
 	logger.Log.Info().Msg(fmt.Sprintf("║ \033[1mBiểu đồ:\033[0m %-37s ║", successBar+failedBar))
 	logger.Log.Info().Msg(fmt.Sprintf("║ \033[1;32m■\033[0m Thành công: %-3d \033[1;31m□\033[0m Thất bại: %-19d ║", successAccounts, failedAccounts))
+	logger.Log.Info().Msg("╚══════════════════════════════════════════════╝\n")
+
+	logger.Log.Info().Msg("Hoàn thành kiểm tra tài khoản")
+	logger.Log.Info().Str("successFile", successFile).Msg(fmt.Sprintf("Kết quả tài khoản thành công đã được lưu vào: %s", successFile))
+	logger.Log.Info().Str("failFile", failFile).Msg(fmt.Sprintf("Kết quả tài khoản thất bại đã được lưu vào: %s", failFile))
+
+	// Trước khi kết thúc, chạy kiểm tra tính nhất quán
+	isValid, issues := accountProcessor.Reconcile()
+	if !isValid {
+		logger.Log.Warn().Msg("Phát hiện vấn đề với việc đếm tài khoản:")
+		for _, issue := range issues {
+			logger.Log.Warn().Msg("- " + issue)
+		}
+	}
+
+	// Hiển thị thống kê cuối cùng
+	accountProcessor.PrintStatistics()
+
+	// Thay thế biến đếm cũ bằng giá trị từ processor
+	totalAccounts = accountProcessor.GetTotalAccounts()
+	successAccounts = accountProcessor.GetSuccessAccounts()
+	failedAccounts = accountProcessor.GetFailedAccounts()
+
+	// In kết quả cuối cùng
+	logger.Log.Info().Msg("╔══════════════════════════════════════════════╗")
+	logger.Log.Info().Msg("║           KẾT QUẢ CHẠY BATCH LOGIN          ║")
+	logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
+	logger.Log.Info().Msgf("║ Tổng số tài khoản: %-26d ║", totalAccounts)
+	logger.Log.Info().Msgf("║ Số tài khoản thành công: %-20d ║", successAccounts)
+	logger.Log.Info().Msgf("║ Số tài khoản thất bại: %-22d ║", failedAccounts)
 	logger.Log.Info().Msg("╚══════════════════════════════════════════════╝\n")
 
 	logger.Log.Info().Msg("Hoàn thành kiểm tra tài khoản")
