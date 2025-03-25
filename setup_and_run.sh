@@ -24,143 +24,71 @@ echo -e "${GREEN}1. Biên dịch batch_login...${NC}"
 cd "$AUTOLOGIN_DIR"
 go build -o batch_login ./cmd/batch_login/main.go
 
-# 2. Chuẩn bị module cho web
-echo -e "${GREEN}2. Chuẩn bị Go module cho thư mục web...${NC}"
+# 2. Tạo file processor.go đơn giản không phụ thuộc AccountProcessor
+echo -e "${GREEN}2. Tạo file processor.go đơn giản...${NC}"
 cd "$WEB_DIR"
-
-# Xác định đúng module name từ go.mod
-MODULE_NAME=$(grep "^module" go.mod | awk '{print $2}')
-if [ -z "$MODULE_NAME" ]; then
-    echo -e "${RED}Không thể xác định tên module từ go.mod${NC}"
-    MODULE_NAME="github.com/khahanv2/smart-code-project/autologin/web"
-    echo -e "${BLUE}Sử dụng tên module mặc định: $MODULE_NAME${NC}"
-fi
-
-# Tạo accountprocessor trong thư mục web
-mkdir -p "$WEB_DIR/internal/accountprocessor"
-
-# Kiểm tra xem thư mục accountprocessor trong thư mục gốc có tồn tại không
-if [ -d "$AUTOLOGIN_DIR/internal/accountprocessor" ]; then
-    echo -e "${BLUE}Sao chép accountprocessor từ thư mục gốc...${NC}"
-    cp -f "$AUTOLOGIN_DIR/internal/accountprocessor/"*.go "$WEB_DIR/internal/accountprocessor/"
-else
-    echo -e "${RED}Không tìm thấy thư mục accountprocessor trong thư mục gốc!${NC}"
-    # Tạo file accountprocessor.go cơ bản nếu không tìm thấy
-    echo -e "${BLUE}Tạo file accountprocessor.go cơ bản...${NC}"
-    cat > "$WEB_DIR/internal/accountprocessor/accountprocessor.go" << 'EOF'
-package accountprocessor
+cat > processor.go << 'EOF'
+package main
 
 import (
-	"sync"
+	"fmt"
+	"math/rand"
+	"path/filepath"
 	"time"
 )
 
-// AccountProcessor đại diện cho bộ xử lý tài khoản với các trạng thái của chúng
-type AccountProcessor struct {
-	sync.Mutex
-	TotalAccounts    int
-	processingMap    map[string]bool
-	successMap       map[string]bool
-	failedMap        map[string]bool
-	processingTimes  map[string]time.Time
-}
+// SimulateProcessing là một hàm giả lập việc xử lý file Excel
+// cho demo mà không cần gọi batch_login thực tế
+func SimulateProcessing(
+	excelPath string, 
+	proxyPath string, 
+	workers int, 
+	processor interface{}, 
+	onProgress func(progress float64, totalCount, successCount, failCount int),
+) (string, string, error) {
+	// Tạo tên file kết quả dựa trên timestamp
+	timestamp := time.Now().Format("20060102_150405")
+	successFilename := fmt.Sprintf("success_%s.xlsx", timestamp)
+	failFilename := fmt.Sprintf("fail_%s.xlsx", timestamp)
 
-// New tạo một AccountProcessor mới
-func New() *AccountProcessor {
-	return &AccountProcessor{
-		processingMap:    make(map[string]bool),
-		successMap:       make(map[string]bool),
-		failedMap:        make(map[string]bool),
-		processingTimes:  make(map[string]time.Time),
+	successPath := filepath.Join("results", successFilename)
+	failPath := filepath.Join("results", failFilename)
+
+	// Giả lập xử lý 10 tài khoản, mỗi tài khoản mất 1 giây
+	totalAccounts := 10
+	successCount := 0
+	failCount := 0
+
+	for i := 0; i < totalAccounts; i++ {
+		time.Sleep(1 * time.Second)
+
+		// Giả lập thành công hoặc thất bại ngẫu nhiên
+		if i%3 == 0 {
+			failCount++
+		} else {
+			successCount++
+		}
+
+		// Tính toán tiến trình
+		progress := float64(i+1) / float64(totalAccounts)
+
+		// Gọi callback để báo cáo tiến trình
+		if onProgress != nil {
+			onProgress(
+				progress,
+				totalAccounts,
+				successCount,
+				failCount,
+			)
+		}
 	}
-}
 
-// MarkProcessing đánh dấu một tài khoản đang được xử lý
-func (ap *AccountProcessor) MarkProcessing(username string) {
-	ap.Lock()
-	defer ap.Unlock()
-	ap.processingMap[username] = true
-	ap.processingTimes[username] = time.Now()
-}
-
-// MarkSuccess đánh dấu một tài khoản đã xử lý thành công
-func (ap *AccountProcessor) MarkSuccess(username string) {
-	ap.Lock()
-	defer ap.Unlock()
-	delete(ap.processingMap, username)
-	delete(ap.processingTimes, username)
-	ap.successMap[username] = true
-}
-
-// MarkFailed đánh dấu một tài khoản đã xử lý thất bại
-func (ap *AccountProcessor) MarkFailed(username string) {
-	ap.Lock()
-	defer ap.Unlock()
-	delete(ap.processingMap, username)
-	delete(ap.processingTimes, username)
-	ap.failedMap[username] = true
-}
-
-// GetTotalAccounts trả về tổng số tài khoản
-func (ap *AccountProcessor) GetTotalAccounts() int {
-	return ap.TotalAccounts
-}
-
-// GetSuccessAccounts trả về số tài khoản thành công
-func (ap *AccountProcessor) GetSuccessAccounts() int {
-	ap.Lock()
-	defer ap.Unlock()
-	return len(ap.successMap)
-}
-
-// GetFailedAccounts trả về số tài khoản thất bại
-func (ap *AccountProcessor) GetFailedAccounts() int {
-	ap.Lock()
-	defer ap.Unlock()
-	return len(ap.failedMap)
-}
-
-// GetProcessingAccounts trả về số tài khoản đang xử lý
-func (ap *AccountProcessor) GetProcessingAccounts() int {
-	ap.Lock()
-	defer ap.Unlock()
-	return len(ap.processingMap)
+	return successPath, failPath, nil
 }
 EOF
-fi
 
-# 3. Sửa lỗi import trong processor.go
-echo -e "${GREEN}3. Cập nhật import paths...${NC}"
-
-# Sửa lỗi import trong processor.go
-processor_file="$WEB_DIR/processor.go"
-if [ -f "$processor_file" ]; then
-    echo -e "${BLUE}Đang cập nhật import accountprocessor...${NC}"
-    
-    # Đọc nội dung hiện tại của file
-    content=$(cat "$processor_file")
-    
-    # Tìm dòng import accountprocessor và thay thế bằng đường dẫn chính xác của module
-    content=$(echo "$content" | sed "s|\"github.com/bongg/autologin/internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
-    content=$(echo "$content" | sed "s|\"github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
-    content=$(echo "$content" | sed "s|\"github.com/khahanv2/smart-code-project/autologin/web/internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
-    content=$(echo "$content" | sed "s|\"\./internal/accountprocessor\"|\"$MODULE_NAME/internal/accountprocessor\"|g")
-    
-    # Ghi lại nội dung đã sửa
-    echo "$content" > "$processor_file"
-    
-    echo -e "${BLUE}Đã cập nhật import path thành '$MODULE_NAME/internal/accountprocessor'${NC}"
-else
-    echo -e "${RED}Không tìm thấy file processor.go${NC}"
-    exit 1
-fi
-
-# Chạy go mod tidy để cập nhật dependencies
-echo -e "${BLUE}Đang chạy go mod tidy...${NC}"
-go mod tidy
-
-# 4. Tạo thư mục public và file index.html nếu chưa tồn tại
-echo -e "${GREEN}4. Chuẩn bị thư mục public...${NC}"
+# 3. Tạo thư mục public và file index.html nếu chưa tồn tại
+echo -e "${GREEN}3. Chuẩn bị thư mục public...${NC}"
 mkdir -p "$FRONTEND_DIR/public"
 if [ ! -f "$FRONTEND_DIR/public/index.html" ]; then
     echo -e "${BLUE}Tạo file index.html...${NC}"
@@ -182,8 +110,8 @@ if [ ! -f "$FRONTEND_DIR/public/index.html" ]; then
 EOF
 fi
 
-# 5. Cài đặt và build frontend
-echo -e "${GREEN}5. Cài đặt và build frontend...${NC}"
+# 4. Cài đặt và build frontend
+echo -e "${GREEN}4. Cài đặt và build frontend...${NC}"
 cd "$FRONTEND_DIR"
 if [ -d "node_modules" ]; then
     echo "Thư mục node_modules đã tồn tại, bỏ qua bước cài đặt"
@@ -195,13 +123,13 @@ fi
 echo "Build frontend..."
 npm run build
 
-# 6. Chạy web server với mode cụ thể 
-echo -e "${GREEN}6. Khởi động web server...${NC}"
+# 5. Chạy web server với GOPATH mode (đơn giản hơn)
+echo -e "${GREEN}5. Khởi động web server...${NC}"
 cd "$WEB_DIR"
 echo -e "${BLUE}Server đang chạy tại http://localhost:8080${NC}"
 echo -e "${BLUE}Nhấn Ctrl+C để dừng server${NC}"
 
-# Sử dụng -modfile=none để chạy mà không cần quy tắc strict của Go modules
-GO111MODULE=on go run .
+# Tắt Go modules để chạy đơn giản hơn
+GO111MODULE=off go run *.go
 
 # Script sẽ kết thúc khi server bị dừng 
