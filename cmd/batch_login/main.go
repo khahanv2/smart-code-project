@@ -166,11 +166,26 @@ type TransactionHistoryResponse struct {
 // Biến toàn cục để lưu trữ ProxyManager
 var proxyManager *ProxyManager
 
+// Biến đếm số tài khoản
+var (
+	totalAccounts   int = 0
+	successAccounts int = 0
+	failedAccounts  int = 0
+	// Mutex để bảo vệ biến đếm
+	counterMutex sync.Mutex
+)
+
 // processAccount xử lý đăng nhập và kiểm tra thông tin một tài khoản
 func processAccount(username, password string, extraData []string, resultChan chan<- AccountResult) {
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Log.Error().Str("username", username).Interface("error", r).Msg("Có lỗi nghiêm trọng")
+
+			// Cập nhật số tài khoản thất bại
+			counterMutex.Lock()
+			failedAccounts++
+			counterMutex.Unlock()
+
 			resultChan <- AccountResult{
 				Username:  username,
 				Password:  password,
@@ -203,6 +218,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	err := cli.FetchInitialData()
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy dữ liệu ban đầu")
+
+		// Cập nhật số tài khoản thất bại
+		counterMutex.Lock()
+		failedAccounts++
+		counterMutex.Unlock()
+
 		resultChan <- AccountResult{
 			Username:  username,
 			Password:  password,
@@ -369,6 +390,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	err = json.Unmarshal([]byte(loginResult), &loginResponse)
 	if err != nil {
 		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả đăng nhập")
+
+		// Cập nhật số tài khoản thất bại
+		counterMutex.Lock()
+		failedAccounts++
+		counterMutex.Unlock()
+
 		resultChan <- AccountResult{
 			Username:      username,
 			Password:      password,
@@ -384,6 +411,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra nếu có lỗi trong response
 		if loginResponse.Error.Code > 0 || loginResponse.Error.Message != "" {
 			logger.Log.Error().Str("username", username).Str("message", loginResponse.Error.Message).Msg("Đăng nhập thất bại")
+
+			// Cập nhật số tài khoản thất bại
+			counterMutex.Lock()
+			failedAccounts++
+			counterMutex.Unlock()
+
 			resultChan <- AccountResult{
 				Username:      username,
 				Password:      password,
@@ -416,6 +449,12 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra Data.AccountID và Data.CookieID (phiên bản API mới)
 		if loginResponse.Data.AccountID == "" || loginResponse.Data.CookieID == "" {
 			logger.Log.Error().Str("username", username).Msg("Đăng nhập thất bại: Không có thông tin tài khoản")
+
+			// Cập nhật số tài khoản thất bại
+			counterMutex.Lock()
+			failedAccounts++
+			counterMutex.Unlock()
+
 			resultChan <- AccountResult{
 				Username:      username,
 				Password:      password,
@@ -603,6 +642,11 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		DepositTxCode: "",
 		ExtraData:     extraData,
 	}
+
+	// Cập nhật số tài khoản thành công
+	counterMutex.Lock()
+	successAccounts++
+	counterMutex.Unlock()
 }
 
 // getHCMTime chuyển đổi thời gian từ UTC sang múi giờ Hồ Chí Minh
@@ -711,7 +755,10 @@ func main() {
 		rows = rows[1:]
 	}
 
-	logger.Log.Info().Int("accountCount", len(rows)).Msg("Tìm thấy %d tài khoản để xử lý")
+	// Cập nhật tổng số tài khoản
+	totalAccounts = len(rows)
+
+	logger.Log.Info().Int("accountCount", totalAccounts).Msg("Tìm thấy %d tài khoản để xử lý")
 
 	// Tạo thư mục kết quả nếu chưa tồn tại
 	resultsDir := "results"
@@ -799,6 +846,12 @@ func main() {
 			// Kiểm tra tài khoản hoặc mật khẩu trống
 			if username == "" || password == "" {
 				logger.Log.Info().Str("username", username).Msg("Bỏ qua dòng có tài khoản hoặc mật khẩu trống")
+
+				// Cập nhật số tài khoản thất bại nếu dòng không đúng định dạng
+				counterMutex.Lock()
+				failedAccounts++
+				counterMutex.Unlock()
+
 				return
 			}
 
@@ -890,7 +943,26 @@ func main() {
 	// Dừng captcha service
 	captcha.StopCaptchaService()
 
+	// Hiển thị thống kê số tài khoản
+	logger.Log.Info().Msg("=== THỐNG KÊ TÀI KHOẢN ===")
+	logger.Log.Info().Int("total", totalAccounts).Msg(fmt.Sprintf("Tổng số tài khoản: %d", totalAccounts))
+	logger.Log.Info().Int("success", successAccounts).Msg(fmt.Sprintf("Số tài khoản đăng nhập thành công: %d", successAccounts))
+	logger.Log.Info().Int("failed", failedAccounts).Msg(fmt.Sprintf("Số tài khoản đăng nhập thất bại: %d", failedAccounts))
+
+	// Tính tỷ lệ thành công
+	var successRate float64 = 0
+	if totalAccounts > 0 {
+		successRate = float64(successAccounts) / float64(totalAccounts) * 100
+	}
+	logger.Log.Info().Float64("rate", successRate).Msg(fmt.Sprintf("Tỷ lệ thành công: %.2f%%", successRate))
+
+	// Hiển thị biểu đồ đơn giản bằng ký tự
+	successBar := strings.Repeat("■", successAccounts)
+	failedBar := strings.Repeat("□", failedAccounts)
+	logger.Log.Info().Msg(fmt.Sprintf("Biểu đồ: %s%s", successBar, failedBar))
+	logger.Log.Info().Msg(fmt.Sprintf("         ■ Thành công: %d  □ Thất bại: %d", successAccounts, failedAccounts))
+
 	logger.Log.Info().Msg("Hoàn thành kiểm tra tài khoản")
-	logger.Log.Info().Str("successFile", successFile).Msg("Kết quả tài khoản thành công đã được lưu vào")
-	logger.Log.Info().Str("failFile", failFile).Msg("Kết quả tài khoản thất bại đã được lưu vào")
+	logger.Log.Info().Str("successFile", successFile).Msg(fmt.Sprintf("Kết quả tài khoản thành công đã được lưu vào: %s", successFile))
+	logger.Log.Info().Str("failFile", failFile).Msg(fmt.Sprintf("Kết quả tài khoản thất bại đã được lưu vào: %s", failFile))
 }
