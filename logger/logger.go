@@ -33,7 +33,32 @@ func Init(level string, pretty bool) {
 			Out:        os.Stdout,
 			TimeFormat: "15:04:05",
 			FormatLevel: func(i interface{}) string {
-				return strings.ToUpper(fmt.Sprintf("| %-6s|", i))
+				switch i {
+				case "debug":
+					return "\033[1;35m DEBUG \033[0m" // Bold magenta
+				case "info":
+					return "\033[1;32m INFO  \033[0m" // Bold green
+				case "warn":
+					return "\033[1;33m WARN  \033[0m" // Bold yellow
+				case "error":
+					return "\033[1;31m ERROR \033[0m" // Bold red
+				case "fatal":
+					return "\033[1;37;41m FATAL \033[0m" // Bold white on red background
+				default:
+					return "\033[1m " + strings.ToUpper(fmt.Sprintf("%-6s", i)) + " \033[0m" // Bold default
+				}
+			},
+			FormatMessage: func(i interface{}) string {
+				if i == nil || i.(string) == "" {
+					return ""
+				}
+				return fmt.Sprintf("\033[1m%s\033[0m", i) // Bold message
+			},
+			FormatFieldName: func(i interface{}) string {
+				return fmt.Sprintf("\033[36m%s\033[0m=", i) // Cyan field names
+			},
+			FormatFieldValue: func(i interface{}) string {
+				return fmt.Sprintf("\033[32m%s\033[0m", i) // Green values
 			},
 		}
 	}

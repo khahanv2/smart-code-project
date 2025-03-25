@@ -190,7 +190,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		}
 	}()
 
-	logger.Log.Info().Str("username", username).Msg("Bắt đầu xử lý tài khoản")
+	logger.Log.Info().Str("username", username).Msg("\033[1;34m=== BẮT ĐẦU XỬ LÝ TÀI KHOẢN ===\033[0m")
 
 	// Tạo cấu hình
 	cfg := config.NewConfig(username, password)
@@ -229,7 +229,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 
 	// === BƯỚC 2-4: LẤY VÀ GIẢI CAPTCHA TRONG VÒNG LẶP CHO ĐẾN KHI THÀNH CÔNG ===
 	var idyKey string
-	logger.Log.Info().Str("username", username).Msg("Bắt đầu quá trình giải captcha...")
+	logger.Log.Info().Str("username", username).Msg("\033[1;34mBắt đầu quá trình giải captcha...\033[0m")
 
 	// Vòng lặp vô hạn cho đến khi giải được captcha
 	for {
@@ -297,7 +297,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra nếu có Message (IdyKey)
 		if response.Data.Message != "" {
 			idyKey = response.Data.Message
-			logger.Log.Info().Str("username", username).Msg("Xác thực captcha thành công!")
+			logger.Log.Info().Str("username", username).Msg("\033[1;32mXác thực captcha thành công!\033[0m")
 			break
 		} else {
 			logger.Log.Info().Str("username", username).Msg("Xác thực captcha thất bại - Thử lại...")
@@ -444,7 +444,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		}
 	}
 
-	logger.Log.Info().Str("username", username).Msg("Đăng nhập thành công!")
+	logger.Log.Info().Str("username", username).Msg("\033[1;32mĐăng nhập thành công!\033[0m")
 
 	// === BƯỚC 6: CẬP NHẬT THÔNG TIN SAU ĐĂNG NHẬP ===
 	logger.Log.Info().Str("username", username).Msg("Bước 6: Đang cập nhật thông tin sau đăng nhập...")
@@ -496,7 +496,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	} else {
 		// Lấy giá trị số dư trực tiếp từ cấu trúc JSON thực tế
 		balance = balanceResponse.Data.BalanceAmount
-		logger.Log.Info().Float64("balance", balance).Msg("Số dư tài khoản")
+		logger.Log.Info().Float64("balance", balance).Msg("\033[1;33mSố dư tài khoản: %.2f\033[0m")
 	}
 
 	// === BƯỚC 8: KIỂM TRA QUYỀN TRUY CẬP LỊCH SỬ GIAO DỊCH ===
@@ -584,7 +584,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 
 					// Nếu tìm thấy giao dịch nạp tiền, lưu thông tin để trả về
 					if lastDepositTime != "" {
-						logger.Log.Info().Float64("lastDepositAmount", lastDepositAmount).Str("lastDepositTime", lastDepositTime).Str("lastDepositTxCode", lastDepositTxCode).Msg("Tìm thấy giao dịch nạp tiền gần nhất: %.2f VND vào %s [%s]")
+						logger.Log.Info().Float64("lastDepositAmount", lastDepositAmount).Str("lastDepositTime", lastDepositTime).Str("lastDepositTxCode", lastDepositTxCode).Msg("\033[1;32mTìm thấy giao dịch nạp tiền gần nhất: %.2f VND vào %s [%s]\033[0m")
 
 						// Gửi kết quả với thông tin số dư và giao dịch nạp tiền gần nhất
 						resultChan <- AccountResult{
@@ -933,10 +933,13 @@ func main() {
 	captcha.StopCaptchaService()
 
 	// Hiển thị thống kê số tài khoản
-	logger.Log.Info().Msg("=== THỐNG KÊ TÀI KHOẢN ===")
-	logger.Log.Info().Int("total", totalAccounts).Msg(fmt.Sprintf("Tổng số tài khoản: %d", totalAccounts))
-	logger.Log.Info().Int("success", successAccounts).Msg(fmt.Sprintf("Số tài khoản đăng nhập thành công: %d", successAccounts))
-	logger.Log.Info().Int("failed", failedAccounts).Msg(fmt.Sprintf("Số tài khoản đăng nhập thất bại: %d", failedAccounts))
+	logger.Log.Info().Msg("\n\n╔══════════════════════════════════════════════╗")
+	logger.Log.Info().Msg("║            \033[1mTHỐNG KÊ TÀI KHOẢN\033[0m               ║")
+	logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
+	logger.Log.Info().Int("total", totalAccounts).Msg(fmt.Sprintf("║ \033[1mTổng số tài khoản:\033[0m %-25d ║", totalAccounts))
+	logger.Log.Info().Int("success", successAccounts).Msg(fmt.Sprintf("║ \033[1;32mSố tài khoản đăng nhập thành công:\033[0m %-13d ║", successAccounts))
+	logger.Log.Info().Int("failed", failedAccounts).Msg(fmt.Sprintf("║ \033[1;31mSố tài khoản đăng nhập thất bại:\033[0m %-15d ║", failedAccounts))
+	logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
 
 	// Kiểm tra tổng số tài khoản thành công và thất bại
 	if (successAccounts + failedAccounts) != totalAccounts {
@@ -945,7 +948,8 @@ func main() {
 			Int("success", successAccounts).
 			Int("failed", failedAccounts).
 			Int("sum", successAccounts+failedAccounts).
-			Msg("Cảnh báo: Tổng số tài khoản thành công và thất bại không bằng tổng số tài khoản")
+			Msg("║ \033[1;33mCảnh báo: Tổng số tài khoản không khớp!\033[0m        ║")
+		logger.Log.Info().Msg("╠══════════════════════════════════════════════╣")
 	}
 
 	// Tính tỷ lệ thành công
@@ -953,13 +957,14 @@ func main() {
 	if totalAccounts > 0 {
 		successRate = float64(successAccounts) / float64(totalAccounts) * 100
 	}
-	logger.Log.Info().Float64("rate", successRate).Msg(fmt.Sprintf("Tỷ lệ thành công: %.2f%%", successRate))
+	logger.Log.Info().Float64("rate", successRate).Msg(fmt.Sprintf("║ \033[1mTỷ lệ thành công:\033[0m %.2f%%%-25s ║", successRate, ""))
 
 	// Hiển thị biểu đồ đơn giản bằng ký tự
-	successBar := strings.Repeat("■", successAccounts)
-	failedBar := strings.Repeat("□", failedAccounts)
-	logger.Log.Info().Msg(fmt.Sprintf("Biểu đồ: %s%s", successBar, failedBar))
-	logger.Log.Info().Msg(fmt.Sprintf("         ■ Thành công: %d  □ Thất bại: %d", successAccounts, failedAccounts))
+	successBar := strings.Repeat("\033[1;32m■\033[0m", successAccounts)
+	failedBar := strings.Repeat("\033[1;31m□\033[0m", failedAccounts)
+	logger.Log.Info().Msg(fmt.Sprintf("║ \033[1mBiểu đồ:\033[0m %-37s ║", successBar+failedBar))
+	logger.Log.Info().Msg(fmt.Sprintf("║ \033[1;32m■\033[0m Thành công: %-3d \033[1;31m□\033[0m Thất bại: %-19d ║", successAccounts, failedAccounts))
+	logger.Log.Info().Msg("╚══════════════════════════════════════════════╝\n")
 
 	logger.Log.Info().Msg("Hoàn thành kiểm tra tài khoản")
 	logger.Log.Info().Str("successFile", successFile).Msg(fmt.Sprintf("Kết quả tài khoản thành công đã được lưu vào: %s", successFile))
