@@ -14,6 +14,7 @@ import (
 	"github.com/bongg/autologin/captcha"
 	"github.com/bongg/autologin/client"
 	"github.com/bongg/autologin/config"
+	"github.com/bongg/autologin/logger"
 	"github.com/xuri/excelize/v2"
 )
 
@@ -169,7 +170,7 @@ var proxyManager *ProxyManager
 func processAccount(username, password string, extraData []string, resultChan chan<- AccountResult) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("[%s] Có lỗi nghiêm trọng: %v\n", username, r)
+			logger.Log.Error().Str("username", username).Interface("error", r).Msg("Có lỗi nghiêm trọng")
 			resultChan <- AccountResult{
 				Username:  username,
 				Password:  password,
@@ -179,7 +180,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		}
 	}()
 
-	fmt.Printf("[%s] Bắt đầu xử lý tài khoản\n", username)
+	logger.Log.Info().Str("username", username).Msg("Bắt đầu xử lý tài khoản")
 
 	// Tạo cấu hình
 	cfg := config.NewConfig(username, password)
@@ -190,7 +191,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		if proxyStr != "" {
 			proxyURL := formatProxyURL(proxyStr)
 			cfg.ProxyURL = proxyURL
-			fmt.Printf("[%s] Sử dụng proxy: %s\n", username, proxyStr)
+			logger.Log.Info().Str("username", username).Str("proxy", proxyStr).Msg("Sử dụng proxy")
 		}
 	}
 
@@ -198,67 +199,34 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	cli := client.NewClient(cfg)
 
 	// === BƯỚC 1: LẤY THÔNG TIN BAN ĐẦU ===
-	fmt.Printf("[%s] Bước 1: Đang lấy thông tin từ trang chủ...\n", username)
+	logger.Log.Info().Str("username", username).Msg("Bước 1: Đang lấy thông tin từ trang chủ")
 	err := cli.FetchInitialData()
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi lấy dữ liệu ban đầu: %v\n", username, err)
-
-		// Nếu timeout hoặc lỗi kết nối, thử đổi proxy
-		if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "connection") {
-			if proxyManager != nil {
-				proxyStr := proxyManager.GetNextProxy()
-				if proxyStr != "" {
-					proxyURL := formatProxyURL(proxyStr)
-					cfg.ProxyURL = proxyURL
-					fmt.Printf("[%s] Đã đổi proxy mới do lỗi kết nối: %s\n", username, proxyStr)
-
-					// Tạo client mới với proxy mới
-					cli = client.NewClient(cfg)
-
-					// Thử kết nối lại
-					err = cli.FetchInitialData()
-					if err != nil {
-						fmt.Printf("[%s] Vẫn lỗi sau khi đổi proxy: %v\n", username, err)
-						resultChan <- AccountResult{
-							Username:  username,
-							Password:  password,
-							Success:   false,
-							ExtraData: extraData,
-						}
-						return
-					}
-				}
-			} else {
-				resultChan <- AccountResult{
-					Username:  username,
-					Password:  password,
-					Success:   false,
-					ExtraData: extraData,
-				}
-				return
-			}
-		} else {
-			resultChan <- AccountResult{
-				Username:  username,
-				Password:  password,
-				Success:   false,
-				ExtraData: extraData,
-			}
-			return
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy dữ liệu ban đầu")
+		resultChan <- AccountResult{
+			Username:  username,
+			Password:  password,
+			Success:   false,
+			ExtraData: extraData,
 		}
+		return
 	}
+
+	logger.Log.Debug().Str("username", username).Str("token", logger.TruncateToken(cli.GetToken())).Msg("Đã lấy được RequestVerificationToken")
+	logger.Log.Debug().Str("username", username).Str("cookie", logger.TruncateToken(cli.GetCookie())).Msg("Đã lấy được Cookie")
+	logger.Log.Debug().Str("username", username).Str("fingerIDX", cli.GetFingerIDX()).Msg("Đã tạo FingerIDX")
 
 	// === BƯỚC 2-4: LẤY VÀ GIẢI CAPTCHA TRONG VÒNG LẶP CHO ĐẾN KHI THÀNH CÔNG ===
 	var idyKey string
-	fmt.Printf("[%s] Bắt đầu quá trình giải captcha...\n", username)
+	logger.Log.Info().Str("username", username).Msg("Bắt đầu quá trình giải captcha...")
 
 	// Vòng lặp vô hạn cho đến khi giải được captcha
 	for {
 		// === BƯỚC 2: LẤY CAPTCHA ===
-		fmt.Printf("[%s] Đang lấy Slider Captcha...\n", username)
+		logger.Log.Info().Str("username", username).Msg("Bước 2: Đang lấy Slider Captcha...")
 		captchaJSON, err := cli.GetSliderCaptcha()
 		if err != nil {
-			fmt.Printf("[%s] Lỗi khi lấy captcha: %v - Thử lại...\n", username, err)
+			logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy captcha - Thử lại...")
 
 			// Nếu timeout hoặc lỗi kết nối, thử đổi proxy
 			if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "connection") {
@@ -267,7 +235,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 					if proxyStr != "" {
 						proxyURL := formatProxyURL(proxyStr)
 						cfg.ProxyURL = proxyURL
-						fmt.Printf("[%s] Đã đổi proxy mới do lỗi kết nối: %s\n", username, proxyStr)
+						logger.Log.Info().Str("username", username).Str("proxy", proxyStr).Msg("Đã đổi proxy mới do lỗi kết nối")
 
 						// Tạo client mới với proxy mới
 						cli = client.NewClient(cfg)
@@ -275,7 +243,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 						// Cần lấy lại dữ liệu ban đầu với proxy mới
 						err = cli.FetchInitialData()
 						if err != nil {
-							fmt.Printf("[%s] Lỗi khi lấy dữ liệu ban đầu với proxy mới: %v\n", username, err)
+							logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy dữ liệu ban đầu với proxy mới")
 						}
 					}
 				}
@@ -286,22 +254,22 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		}
 
 		// === BƯỚC 3: GIẢI CAPTCHA ===
-		fmt.Printf("[%s] Đang giải Captcha...\n", username)
+		logger.Log.Info().Str("username", username).Msg("Bước 3: Đang giải Captcha...")
 		startTime := time.Now()
 		xPos, err := captcha.SolveCaptchaWithService(captchaJSON)
 		if err != nil {
-			fmt.Printf("[%s] Lỗi khi giải captcha: %v - Thử lại...\n", username, err)
+			logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi giải captcha - Thử lại...")
 			time.Sleep(1 * time.Second) // Nghỉ 1 giây trước khi thử lại
 			continue
 		}
 		elapsedTime := time.Since(startTime)
-		fmt.Printf("[%s] Đã giải được Captcha: X = %d (%.2f giây)\n", username, xPos, elapsedTime.Seconds())
+		logger.Log.Info().Str("username", username).Int("xPos", xPos).Float64("elapsedTime", elapsedTime.Seconds()).Msg("Đã giải được Captcha: X = %d (%.2f giây)")
 
 		// === BƯỚC 4: XÁC THỰC CAPTCHA ===
-		fmt.Printf("[%s] Đang xác thực Captcha...\n", username)
+		logger.Log.Info().Str("username", username).Msg("Bước 4: Đang xác thực Captcha...")
 		verifyResult, err := cli.CheckSliderCaptcha(xPos)
 		if err != nil {
-			fmt.Printf("[%s] Lỗi khi xác thực captcha: %v - Thử lại...\n", username, err)
+			logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi xác thực captcha - Thử lại...")
 			time.Sleep(1 * time.Second) // Nghỉ 1 giây trước khi thử lại
 			continue
 		}
@@ -310,7 +278,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		var response CaptchaVerifyResponse
 		err = json.Unmarshal([]byte(verifyResult), &response)
 		if err != nil {
-			fmt.Printf("[%s] Lỗi khi parse kết quả xác thực: %v - Thử lại...\n", username, err)
+			logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả xác thực - Thử lại...")
 			time.Sleep(1 * time.Second) // Nghỉ 1 giây trước khi thử lại
 			continue
 		}
@@ -318,10 +286,10 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		// Kiểm tra nếu có Message (IdyKey)
 		if response.Data.Message != "" {
 			idyKey = response.Data.Message
-			fmt.Printf("[%s] Xác thực captcha thành công!\n", username)
+			logger.Log.Info().Str("username", username).Msg("Xác thực captcha thành công!")
 			break
 		} else {
-			fmt.Printf("[%s] Xác thực captcha thất bại - Thử lại...\n", username)
+			logger.Log.Info().Str("username", username).Msg("Xác thực captcha thất bại - Thử lại...")
 			time.Sleep(1 * time.Second) // Nghỉ 1 giây trước khi thử lại
 		}
 	}
@@ -330,10 +298,10 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	cli.SetIdyKey(idyKey)
 
 	// === BƯỚC 5: ĐĂNG NHẬP (CHỈ KHI ĐÃ CÓ IDYKEY) ===
-	fmt.Printf("[%s] Bước 5: Đang đăng nhập...\n", username)
+	logger.Log.Info().Str("username", username).Msg("Bước 5: Đang đăng nhập...")
 	loginResult, err := cli.Login()
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi đăng nhập: %v\n", username, err)
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi đăng nhập")
 
 		// Nếu timeout hoặc lỗi kết nối, thử đổi proxy
 		if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "connection") {
@@ -342,7 +310,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 				if proxyStr != "" {
 					proxyURL := formatProxyURL(proxyStr)
 					cfg.ProxyURL = proxyURL
-					fmt.Printf("[%s] Đã đổi proxy mới do lỗi kết nối: %s\n", username, proxyStr)
+					logger.Log.Info().Str("username", username).Str("proxy", proxyStr).Msg("Đã đổi proxy mới do lỗi kết nối")
 
 					// Tạo client mới với proxy mới
 					cli = client.NewClient(cfg)
@@ -350,7 +318,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 					// Cần lấy lại dữ liệu ban đầu và idyKey với proxy mới
 					err = cli.FetchInitialData()
 					if err != nil {
-						fmt.Printf("[%s] Lỗi khi lấy dữ liệu ban đầu với proxy mới: %v\n", username, err)
+						logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy dữ liệu ban đầu với proxy mới")
 						resultChan <- AccountResult{
 							Username:  username,
 							Password:  password,
@@ -363,7 +331,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 					// Thử đăng nhập lại
 					loginResult, err = cli.Login()
 					if err != nil {
-						fmt.Printf("[%s] Vẫn lỗi sau khi đổi proxy: %v\n", username, err)
+						logger.Log.Error().Str("username", username).Err(err).Msg("Vẫn lỗi sau khi đổi proxy")
 						resultChan <- AccountResult{
 							Username:  username,
 							Password:  password,
@@ -394,13 +362,13 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	}
 
 	// In ra toàn bộ JSON response để kiểm tra
-	fmt.Printf("[%s] JSON Login response: %s\n", username, loginResult)
+	logger.Log.Debug().Str("username", username).Str("loginResult", loginResult).Msg("JSON Login response")
 
 	// Kiểm tra kết quả đăng nhập
 	var loginResponse LoginResponse
 	err = json.Unmarshal([]byte(loginResult), &loginResponse)
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi parse kết quả đăng nhập: %v\n", username, err)
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả đăng nhập")
 		resultChan <- AccountResult{
 			Username:      username,
 			Password:      password,
@@ -415,7 +383,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	} else {
 		// Kiểm tra nếu có lỗi trong response
 		if loginResponse.Error.Code > 0 || loginResponse.Error.Message != "" {
-			fmt.Printf("[%s] Đăng nhập thất bại: %s\n", username, loginResponse.Error.Message)
+			logger.Log.Error().Str("username", username).Str("message", loginResponse.Error.Message).Msg("Đăng nhập thất bại")
 			resultChan <- AccountResult{
 				Username:      username,
 				Password:      password,
@@ -431,7 +399,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 
 		// Kiểm tra Data.IsSuccess nếu có (phiên bản API cũ)
 		if loginResponse.Data.IsSuccess == false && loginResponse.Data.Message != "" {
-			fmt.Printf("[%s] Đăng nhập thất bại: %s\n", username, loginResponse.Data.Message)
+			logger.Log.Error().Str("username", username).Str("message", loginResponse.Data.Message).Msg("Đăng nhập thất bại")
 			resultChan <- AccountResult{
 				Username:      username,
 				Password:      password,
@@ -447,7 +415,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 
 		// Kiểm tra Data.AccountID và Data.CookieID (phiên bản API mới)
 		if loginResponse.Data.AccountID == "" || loginResponse.Data.CookieID == "" {
-			fmt.Printf("[%s] Đăng nhập thất bại: Không có thông tin tài khoản\n", username)
+			logger.Log.Error().Str("username", username).Msg("Đăng nhập thất bại: Không có thông tin tài khoản")
 			resultChan <- AccountResult{
 				Username:      username,
 				Password:      password,
@@ -462,13 +430,13 @@ func processAccount(username, password string, extraData []string, resultChan ch
 		}
 	}
 
-	fmt.Printf("[%s] Đăng nhập thành công!\n", username)
+	logger.Log.Info().Str("username", username).Msg("Đăng nhập thành công!")
 
 	// === BƯỚC 6: CẬP NHẬT THÔNG TIN SAU ĐĂNG NHẬP ===
-	fmt.Printf("[%s] Bước 6: Đang cập nhật thông tin sau đăng nhập...\n", username)
+	logger.Log.Info().Str("username", username).Msg("Bước 6: Đang cập nhật thông tin sau đăng nhập...")
 	err = cli.FetchHomeAfterLogin()
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi cập nhật thông tin sau đăng nhập: %v\n", username, err)
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi cập nhật thông tin sau đăng nhập")
 		// Vẫn thành công đăng nhập, và đã được coi là thành công
 		resultChan <- AccountResult{
 			Username:      username,
@@ -484,10 +452,10 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	}
 
 	// === BƯỚC 7: KIỂM TRA SỐ DƯ ===
-	fmt.Printf("[%s] Bước 7: Đang kiểm tra số dư tài khoản...\n", username)
+	logger.Log.Info().Str("username", username).Msg("Bước 7: Đang kiểm tra số dư tài khoản...")
 	balanceResult, err := cli.GetMemberBalance()
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi kiểm tra số dư: %v\n", username, err)
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi kiểm tra số dư")
 		// Vẫn thành công đăng nhập, và đã được coi là thành công
 		resultChan <- AccountResult{
 			Username:      username,
@@ -503,25 +471,25 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	}
 
 	// In ra toàn bộ JSON để kiểm tra
-	fmt.Printf("[%s] JSON Balance response: %s\n", username, balanceResult)
+	logger.Log.Debug().Str("username", username).Str("balanceResult", balanceResult).Msg("JSON Balance response")
 
 	// Phân tích kết quả số dư
 	var balanceResponse BalanceResponse
 	var balance float64 = 0.0
 	err = json.Unmarshal([]byte(balanceResult), &balanceResponse)
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi parse kết quả số dư: %v\n", username, err)
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả số dư")
 	} else {
 		// Lấy giá trị số dư trực tiếp từ cấu trúc JSON thực tế
 		balance = balanceResponse.Data.BalanceAmount
-		fmt.Printf("[%s] Số dư tài khoản: %.2f\n", username, balance)
+		logger.Log.Info().Float64("balance", balance).Msg("Số dư tài khoản")
 	}
 
 	// === BƯỚC 8: KIỂM TRA QUYỀN TRUY CẬP LỊCH SỬ GIAO DỊCH ===
-	fmt.Printf("[%s] Bước 8: Đang kiểm tra quyền truy cập lịch sử giao dịch...\n", username)
+	logger.Log.Info().Str("username", username).Msg("Bước 8: Đang kiểm tra quyền truy cập lịch sử giao dịch...")
 	accessResult, err := cli.CheckTransactionAccess()
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi kiểm tra quyền truy cập: %v\n", username, err)
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi kiểm tra quyền truy cập")
 		// Gửi kết quả với thông tin số dư
 		resultChan <- AccountResult{
 			Username:      username,
@@ -540,27 +508,26 @@ func processAccount(username, password string, extraData []string, resultChan ch
 	var accessResponse TransactionAccessResponse
 	err = json.Unmarshal([]byte(accessResult), &accessResponse)
 	if err != nil {
-		fmt.Printf("[%s] Lỗi khi parse kết quả quyền truy cập: %v\n", username, err)
+		logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả quyền truy cập")
 	} else {
 		if accessResponse.Data.IsOpen {
-			fmt.Printf("[%s] Có quyền truy cập lịch sử giao dịch (Giới hạn: %d)\n",
-				username, accessResponse.Data.LimitCount)
+			logger.Log.Info().Int("limitCount", accessResponse.Data.LimitCount).Msg("Có quyền truy cập lịch sử giao dịch (Giới hạn: %d)")
 
 			// === BƯỚC 9: LẤY LỊCH SỬ GIAO DỊCH ===
-			fmt.Printf("[%s] Bước 9: Đang lấy lịch sử giao dịch...\n", username)
+			logger.Log.Info().Str("username", username).Msg("Bước 9: Đang lấy lịch sử giao dịch...")
 			historyResult, err := cli.GetTransactionHistory()
 			if err != nil {
-				fmt.Printf("[%s] Lỗi khi lấy lịch sử giao dịch: %v\n", username, err)
+				logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi lấy lịch sử giao dịch")
 			} else {
 				// Phân tích kết quả lịch sử giao dịch
 				var historyResponse TransactionHistoryResponse
 				err = json.Unmarshal([]byte(historyResult), &historyResponse)
 				if err != nil {
-					fmt.Printf("[%s] Lỗi khi parse kết quả lịch sử giao dịch: %v\n", username, err)
+					logger.Log.Error().Str("username", username).Err(err).Msg("Lỗi khi parse kết quả lịch sử giao dịch")
 				} else {
 					// Hiển thị số lượng giao dịch
 					transactionCount := len(historyResponse.Data.Data)
-					fmt.Printf("[%s] Tìm thấy %d giao dịch\n", username, transactionCount)
+					logger.Log.Info().Int("transactionCount", transactionCount).Msg("Tìm thấy %d giao dịch")
 
 					// Biến lưu trữ thông tin giao dịch nạp tiền gần nhất
 					var lastDepositAmount float64 = 0
@@ -574,18 +541,18 @@ func processAccount(username, password string, extraData []string, resultChan ch
 					}
 
 					if transactionCount > 0 {
-						fmt.Printf("[%s] %d giao dịch gần nhất:\n", username, maxShow)
+						logger.Log.Info().Int("maxShow", maxShow).Msg("%d giao dịch gần nhất:")
 						for i := 0; i < maxShow; i++ {
 							trans := historyResponse.Data.Data[i]
 
 							// Chuyển đổi thời gian sang múi giờ HCM
 							hcmTime := getHCMTime(trans.CreateTime)
 
-							fmt.Printf("[%s]   - Mã giao dịch: %s\n", username, trans.TransactionNumber)
-							fmt.Printf("[%s]     Thời gian: %s\n", username, hcmTime)
-							fmt.Printf("[%s]     Loại giao dịch: %d\n", username, trans.TransType)
-							fmt.Printf("[%s]     Số tiền: %.2f\n", username, trans.TransactionAmount)
-							fmt.Printf("[%s]     Số dư sau: %.2f\n", username, trans.BalanceAmount)
+							logger.Log.Info().Str("username", username).Str("transactionNumber", trans.TransactionNumber).Msg("   - Mã giao dịch: %s")
+							logger.Log.Info().Str("username", username).Str("hcmTime", hcmTime).Msg("     Thời gian: %s")
+							logger.Log.Info().Int("transType", trans.TransType).Msg("     Loại giao dịch: %d")
+							logger.Log.Info().Float64("transactionAmount", trans.TransactionAmount).Msg("     Số tiền: %.2f")
+							logger.Log.Info().Float64("balanceAmount", trans.BalanceAmount).Msg("     Số dư sau: %.2f")
 
 							// Kiểm tra nếu là giao dịch nạp tiền thành công (TransType = 1)
 							// Chú ý: Có thể cần điều chỉnh điều kiện này dựa trên mã thực tế của hệ thống
@@ -595,7 +562,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 									lastDepositAmount = trans.TransactionAmount
 									lastDepositTime = hcmTime
 									lastDepositTxCode = trans.TransactionNumber
-									fmt.Printf("[%s]     >>> Đây là giao dịch nạp tiền thành công gần nhất <<<\n", username)
+									logger.Log.Info().Str("username", username).Msg("     >>> Đây là giao dịch nạp tiền thành công gần nhất <<<")
 								}
 							}
 						}
@@ -603,8 +570,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 
 					// Nếu tìm thấy giao dịch nạp tiền, lưu thông tin để trả về
 					if lastDepositTime != "" {
-						fmt.Printf("[%s] Tìm thấy giao dịch nạp tiền gần nhất: %.2f VND vào %s [%s]\n",
-							username, lastDepositAmount, lastDepositTime, lastDepositTxCode)
+						logger.Log.Info().Float64("lastDepositAmount", lastDepositAmount).Str("lastDepositTime", lastDepositTime).Str("lastDepositTxCode", lastDepositTxCode).Msg("Tìm thấy giao dịch nạp tiền gần nhất: %.2f VND vào %s [%s]")
 
 						// Gửi kết quả với thông tin số dư và giao dịch nạp tiền gần nhất
 						resultChan <- AccountResult{
@@ -622,7 +588,7 @@ func processAccount(username, password string, extraData []string, resultChan ch
 				}
 			}
 		} else {
-			fmt.Printf("[%s] Không có quyền truy cập lịch sử giao dịch\n", username)
+			logger.Log.Info().Str("username", username).Msg("Không có quyền truy cập lịch sử giao dịch")
 		}
 	}
 
@@ -656,9 +622,12 @@ func getHCMTime(utcTimeStr string) string {
 }
 
 func main() {
+	// Khởi tạo logger với pretty printing
+	logger.Init("info", true)
+
 	// Kiểm tra đường dẫn file Excel từ tham số dòng lệnh
 	if len(os.Args) < 2 {
-		fmt.Println("Cách sử dụng: batch_login <excel_file_path>")
+		logger.Log.Fatal().Msg("Cách sử dụng: batch_login <excel_file_path>")
 		os.Exit(1)
 	}
 
@@ -666,20 +635,20 @@ func main() {
 	var err error
 	proxyManager, err = NewProxyManager("proxy.txt")
 	if err != nil {
-		fmt.Printf("Cảnh báo: Không thể tải proxy từ file: %v - Chạy không có proxy\n", err)
+		logger.Log.Warn().Err(err).Msg("Không thể tải proxy từ file - Chạy không có proxy")
 	} else {
-		fmt.Println("Đã tải proxy thành công")
+		logger.Log.Info().Msg("Đã tải proxy thành công")
 	}
 
 	excelFilePath := os.Args[1]
 
-	fmt.Println("Bắt đầu xử lý batch login từ file Excel...")
+	logger.Log.Info().Msg("Bắt đầu xử lý batch login từ file Excel...")
 
 	// Kiểm tra tham số dòng lệnh
 	if len(os.Args) < 2 {
-		fmt.Println("Sử dụng: ./batch_login <file_excel.xlsx> [num_workers]")
-		fmt.Println("  - file_excel.xlsx: File Excel chứa danh sách tài khoản")
-		fmt.Println("  - num_workers (tùy chọn): Số luồng xử lý song song (mặc định: 1)")
+		logger.Log.Info().Msg("Sử dụng: ./batch_login <file_excel.xlsx> [num_workers]")
+		logger.Log.Info().Msg("  - file_excel.xlsx: File Excel chứa danh sách tài khoản")
+		logger.Log.Info().Msg("  - num_workers (tùy chọn): Số luồng xử lý song song (mặc định: 1)")
 		os.Exit(1)
 	}
 
@@ -695,20 +664,20 @@ func main() {
 		}
 	}
 
-	fmt.Printf("Đọc file Excel: %s\n", excelFilePath)
-	fmt.Printf("Số luồng xử lý song song: %d\n", maxWorkers)
+	logger.Log.Info().Str("file", excelFilePath).Msg("Đọc file Excel")
+	logger.Log.Info().Int("workers", maxWorkers).Msg("Số luồng xử lý song song")
 
 	// Khởi động Captcha Service trước khi xử lý
 	captchaErr := captcha.StartCaptchaService(9876)
 	if captchaErr != nil {
-		fmt.Printf("Cảnh báo khi khởi động captcha service: %v\n", captchaErr)
-		fmt.Println("Tiếp tục xử lý với chế độ pipe...")
+		logger.Log.Warn().Err(captchaErr).Msg("Cảnh báo khi khởi động captcha service")
+		logger.Log.Info().Msg("Tiếp tục xử lý với chế độ pipe...")
 	}
 
 	// Đọc file Excel
 	excelFile, err := excelize.OpenFile(excelFilePath)
 	if err != nil {
-		fmt.Printf("Lỗi khi mở file Excel: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi mở file Excel")
 		os.Exit(1)
 	}
 	defer excelFile.Close()
@@ -716,24 +685,24 @@ func main() {
 	// Lấy tất cả sheet names
 	sheetNames := excelFile.GetSheetList()
 	if len(sheetNames) == 0 {
-		fmt.Println("Không tìm thấy sheet nào trong file Excel")
+		logger.Log.Error().Msg("Không tìm thấy sheet nào trong file Excel")
 		os.Exit(1)
 	}
 
 	// Sử dụng sheet đầu tiên
 	sheetName := sheetNames[0]
-	fmt.Printf("Sử dụng sheet: %s\n", sheetName)
+	logger.Log.Info().Str("sheetName", sheetName).Msg("Sử dụng sheet")
 
 	// Đọc tất cả rows từ sheet
 	rows, err := excelFile.GetRows(sheetName)
 	if err != nil {
-		fmt.Printf("Lỗi khi đọc dữ liệu từ sheet: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi đọc dữ liệu từ sheet")
 		os.Exit(1)
 	}
 
 	// Kiểm tra có dữ liệu không
 	if len(rows) < 2 {
-		fmt.Println("File Excel không có đủ dữ liệu")
+		logger.Log.Error().Msg("File Excel không có đủ dữ liệu")
 		os.Exit(1)
 	}
 
@@ -742,7 +711,7 @@ func main() {
 		rows = rows[1:]
 	}
 
-	fmt.Printf("Tìm thấy %d tài khoản để xử lý\n", len(rows))
+	logger.Log.Info().Int("accountCount", len(rows)).Msg("Tìm thấy %d tài khoản để xử lý")
 
 	// Tạo thư mục kết quả nếu chưa tồn tại
 	resultsDir := "results"
@@ -820,7 +789,7 @@ func main() {
 
 			// Đảm bảo có đủ cột
 			if len(rowData) < 3 {
-				fmt.Println("Bỏ qua dòng không đủ cột")
+				logger.Log.Error().Msg("Bỏ qua dòng không đủ cột")
 				return
 			}
 
@@ -829,7 +798,7 @@ func main() {
 
 			// Kiểm tra tài khoản hoặc mật khẩu trống
 			if username == "" || password == "" {
-				fmt.Println("Bỏ qua dòng có tài khoản hoặc mật khẩu trống")
+				logger.Log.Info().Str("username", username).Msg("Bỏ qua dòng có tài khoản hoặc mật khẩu trống")
 				return
 			}
 
@@ -911,17 +880,17 @@ func main() {
 
 	// Lưu file Excel kết quả
 	if err := successExcel.SaveAs(successFile); err != nil {
-		fmt.Printf("Lỗi khi lưu file kết quả thành công: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi lưu file kết quả thành công")
 	}
 
 	if err := failExcel.SaveAs(failFile); err != nil {
-		fmt.Printf("Lỗi khi lưu file kết quả thất bại: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi lưu file kết quả thất bại")
 	}
 
 	// Dừng captcha service
 	captcha.StopCaptchaService()
 
-	fmt.Println("Hoàn thành kiểm tra tài khoản")
-	fmt.Printf("Kết quả tài khoản thành công đã được lưu vào: %s\n", successFile)
-	fmt.Printf("Kết quả tài khoản thất bại đã được lưu vào: %s\n", failFile)
+	logger.Log.Info().Msg("Hoàn thành kiểm tra tài khoản")
+	logger.Log.Info().Str("successFile", successFile).Msg("Kết quả tài khoản thành công đã được lưu vào")
+	logger.Log.Info().Str("failFile", failFile).Msg("Kết quả tài khoản thất bại đã được lưu vào")
 }

@@ -4,12 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/bongg/autologin/captcha"
 	"github.com/bongg/autologin/client"
 	"github.com/bongg/autologin/config"
+	"github.com/bongg/autologin/logger"
 )
 
 // CaptchaVerifyResponse cấu trúc phản hồi từ API verify captcha
@@ -21,7 +21,7 @@ type CaptchaVerifyResponse struct {
 
 // LoginResponse cấu trúc phản hồi từ API login
 type LoginResponse struct {
-	Status  int `json:"Status"`
+	Status  int    `json:"Status"`
 	Message string `json:"Message"`
 	Data    struct {
 		IsSuccess bool   `json:"IsSuccess"`
@@ -41,8 +41,8 @@ type BalanceResponse struct {
 // TransactionAccessResponse cấu trúc phản hồi từ API kiểm tra quyền truy cập giao dịch
 type TransactionAccessResponse struct {
 	Data struct {
-		IsOpen      bool `json:"IsOpen"`
-		LimitCount  int  `json:"LimitCount"`
+		IsOpen     bool `json:"IsOpen"`
+		LimitCount int  `json:"LimitCount"`
 	} `json:"Data"`
 }
 
@@ -50,15 +50,15 @@ type TransactionAccessResponse struct {
 type TransactionHistoryResponse struct {
 	Data struct {
 		Data []struct {
-			TransactionNumber  string  `json:"TransactionNumber"`
-			CreateTime         string  `json:"CreateTime"`
-			TransType          int     `json:"TransType"`
-			TransContent       int     `json:"TransContent"`
-			TransactionAmount  float64 `json:"TransactionAmount"`
-			DealType_Sum       int     `json:"DealType_Sum"`
-			BalanceAmount      float64 `json:"BalanceAmount"`
-			PayNumber          string  `json:"PayNumber"`
-			PaywayID           string  `json:"PaywayID"`
+			TransactionNumber string  `json:"TransactionNumber"`
+			CreateTime        string  `json:"CreateTime"`
+			TransType         int     `json:"TransType"`
+			TransContent      int     `json:"TransContent"`
+			TransactionAmount float64 `json:"TransactionAmount"`
+			DealType_Sum      int     `json:"DealType_Sum"`
+			BalanceAmount     float64 `json:"BalanceAmount"`
+			PayNumber         string  `json:"PayNumber"`
+			PaywayID          string  `json:"PaywayID"`
 		} `json:"Data"`
 		Pager struct {
 			TotalItemCount int `json:"TotalItemCount"`
@@ -67,9 +67,12 @@ type TransactionHistoryResponse struct {
 }
 
 func main() {
+	// Khởi tạo logger
+	logger.Init("info", true)
+
 	// Kiểm tra tham số đầu vào
 	if len(os.Args) < 3 {
-		fmt.Println("Sử dụng: auto_login <username> <password>")
+		logger.Log.Fatal().Msg("Sử dụng: auto_login <username> <password>")
 		os.Exit(1)
 	}
 
@@ -83,16 +86,16 @@ func main() {
 	cli := client.NewClient(cfg)
 
 	// === BƯỚC 1: LẤY THÔNG TIN BAN ĐẦU ===
-	fmt.Println("Bước 1: Đang lấy thông tin từ trang chủ...")
+	logger.Log.Info().Msg("Bước 1: Đang lấy thông tin từ trang chủ...")
 	err := cli.FetchInitialData()
 	if err != nil {
-		fmt.Printf("Lỗi khi lấy dữ liệu ban đầu: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi lấy dữ liệu ban đầu")
 		os.Exit(1)
 	}
 
-	fmt.Printf("- Đã lấy được RequestVerificationToken\n")
-	fmt.Printf("- Đã lấy được Cookie\n")
-	fmt.Printf("- Đã tạo FingerIDX: %s\n", cli.GetFingerIDX())
+	logger.Log.Info().Msg("- Đã lấy được RequestVerificationToken")
+	logger.Log.Info().Msg("- Đã lấy được Cookie")
+	logger.Log.Info().Str("fingerIDX", cli.GetFingerIDX()).Msg("- Đã tạo FingerIDX")
 
 	// === BƯỚC 2-4: LẤY VÀ GIẢI CAPTCHA TRONG VÒNG LẶP CHO ĐẾN KHI THÀNH CÔNG ===
 	var idyKey string
@@ -101,64 +104,64 @@ func main() {
 
 	for attempt < maxAttempts {
 		attempt++
-		fmt.Printf("\nLần thử %d/%d\n", attempt, maxAttempts)
-		
+		logger.Log.Info().Int("attempt", attempt).Int("maxAttempts", maxAttempts).Msg("Lần thử %d/%d")
+
 		// === BƯỚC 2: LẤY CAPTCHA ===
-		fmt.Println("Bước 2: Đang lấy Slider Captcha...")
+		logger.Log.Info().Msg("Bước 2: Đang lấy Slider Captcha...")
 		captchaJSON, err := cli.GetSliderCaptcha()
 		if err != nil {
-			fmt.Printf("Lỗi khi lấy captcha: %v\n", err)
+			logger.Log.Error().Err(err).Msg("Lỗi khi lấy captcha")
 			continue
 		}
-		fmt.Printf("- Đã lấy được dữ liệu Captcha JSON (%d bytes)\n", len(captchaJSON))
+		logger.Log.Info().Int("bytes", len(captchaJSON)).Msg("- Đã lấy được dữ liệu Captcha JSON")
 
 		// Lưu captcha vào file để debug nếu cần
 		fileName := fmt.Sprintf("captcha_%d.json", time.Now().Unix())
 		err = os.WriteFile(fileName, []byte(captchaJSON), 0644)
 		if err == nil {
-			fmt.Printf("- Đã lưu captcha vào file: %s\n", fileName)
+			logger.Log.Info().Str("fileName", fileName).Msg("- Đã lưu captcha vào file")
 		}
 
 		// === BƯỚC 3: GIẢI CAPTCHA ===
-		fmt.Println("\nBước 3: Đang giải Captcha...")
+		logger.Log.Info().Msg("Bước 3: Đang giải Captcha...")
 		startTime := time.Now()
 		xPos, err := captcha.SolveCaptcha(captchaJSON)
 		if err != nil {
-			fmt.Printf("Lỗi khi giải captcha: %v\n", err)
+			logger.Log.Error().Err(err).Msg("Lỗi khi giải captcha")
 			continue
 		}
 		elapsedTime := time.Since(startTime)
-		fmt.Printf("- Đã giải được Captcha: X = %d (%.2f giây)\n", xPos, elapsedTime.Seconds())
+		logger.Log.Info().Int("xPos", xPos).Float64("seconds", elapsedTime.Seconds()).Msg("- Đã giải được Captcha")
 
 		// === BƯỚC 4: XÁC THỰC CAPTCHA (CheckSliderCaptcha thay vì VerifySliderCaptcha) ===
-		fmt.Println("\nBước 4: Đang xác thực Captcha...")
+		logger.Log.Info().Msg("Bước 4: Đang xác thực Captcha...")
 		verifyResult, err := cli.CheckSliderCaptcha(xPos)
 		if err != nil {
-			fmt.Printf("Lỗi khi xác thực captcha: %v\n", err)
+			logger.Log.Error().Err(err).Msg("Lỗi khi xác thực captcha")
 			continue
 		}
-		
+
 		// Kiểm tra kết quả xác thực
 		var response CaptchaVerifyResponse
 		err = json.Unmarshal([]byte(verifyResult), &response)
 		if err != nil {
-			fmt.Printf("Lỗi khi parse kết quả xác thực: %v\nDữ liệu: %s\n", err, verifyResult)
+			logger.Log.Error().Err(err).Str("data", logger.TruncateJSON(verifyResult)).Msg("Lỗi khi parse kết quả xác thực")
 			continue
 		}
-		
+
 		// Kiểm tra nếu có Message (IdyKey)
 		if response.Data.Message != "" {
 			idyKey = response.Data.Message
-			fmt.Printf("- Xác thực thành công! IdyKey: %s\n", idyKey)
+			logger.Log.Info().Str("idyKey", logger.TruncateToken(idyKey)).Msg("- Xác thực thành công!")
 			break
 		} else {
-			fmt.Printf("- Xác thực thất bại! Kết quả: %s\n", verifyResult)
+			logger.Log.Error().Str("result", logger.TruncateJSON(verifyResult)).Msg("- Xác thực thất bại!")
 		}
 	}
-	
+
 	// Kiểm tra nếu không lấy được IdyKey sau nhiều lần thử
 	if idyKey == "" {
-		fmt.Printf("\nKhông thể xác thực captcha sau %d lần thử. Hủy quá trình đăng nhập.\n", maxAttempts)
+		logger.Log.Fatal().Int("attempts", maxAttempts).Msg("Không thể xác thực captcha sau nhiều lần thử. Hủy quá trình đăng nhập.")
 		os.Exit(1)
 	}
 
@@ -166,163 +169,112 @@ func main() {
 	cli.SetIdyKey(idyKey)
 
 	// === BƯỚC 5: ĐĂNG NHẬP (CHỈ KHI ĐÃ CÓ IDYKEY) ===
-	fmt.Println("\nBước 5: Đang đăng nhập...")
+	logger.Log.Info().Msg("Bước 5: Đang đăng nhập...")
 	loginResult, err := cli.Login()
 	if err != nil {
-		fmt.Printf("Lỗi khi đăng nhập: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi đăng nhập")
 		os.Exit(1)
 	}
 
 	// Hiển thị kết quả đăng nhập thô để debug
-	fmt.Printf("- Kết quả đăng nhập thô: %s\n", loginResult)
-	
+	logger.Log.Debug().Str("loginResult", logger.TruncateJSON(loginResult)).Msg("- Kết quả đăng nhập thô")
+
 	// Kiểm tra kết quả đăng nhập
 	var loginResponse LoginResponse
 	err = json.Unmarshal([]byte(loginResult), &loginResponse)
 	if err != nil {
-		fmt.Printf("Lỗi khi parse kết quả đăng nhập: %v\n", err)
-		fmt.Println("Tiếp tục với giả định đăng nhập thành công...")
+		logger.Log.Error().Err(err).Msg("Lỗi khi parse kết quả đăng nhập")
+		logger.Log.Info().Msg("Tiếp tục với giả định đăng nhập thành công...")
 	} else {
 		// Chỉ kiểm tra IsSuccess nếu parse JSON thành công
 		if !loginResponse.Data.IsSuccess && loginResponse.Data.Message != "" {
-			fmt.Printf("Đăng nhập thất bại: %s\n", loginResponse.Data.Message)
+			logger.Log.Error().Str("message", loginResponse.Data.Message).Msg("Đăng nhập thất bại")
 			os.Exit(1)
 		}
 	}
-	
-	fmt.Printf("- Đăng nhập thành công!\n")
-	
+
+	logger.Log.Info().Msg("- Đăng nhập thành công!")
+
 	// === BƯỚC 6: CẬP NHẬT THÔNG TIN SAU ĐĂNG NHẬP ===
-	fmt.Println("\nBước 6: Đang cập nhật thông tin sau đăng nhập...")
+	logger.Log.Info().Msg("Bước 6: Đang cập nhật thông tin sau đăng nhập...")
 	err = cli.FetchHomeAfterLogin()
 	if err != nil {
-		fmt.Printf("Lỗi khi cập nhật thông tin sau đăng nhập: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi cập nhật thông tin sau đăng nhập")
 		os.Exit(1)
 	}
-	fmt.Printf("- Đã cập nhật RequestVerificationToken mới\n")
-	fmt.Printf("- Đã cập nhật Cookies: %s\n", cli.GetAllCookiesFormatted())
-	
+
+	logger.Log.Info().Msg("- Cập nhật thông tin thành công!")
+
 	// === BƯỚC 7: KIỂM TRA SỐ DƯ ===
-	fmt.Println("\nBước 7: Đang kiểm tra số dư tài khoản...")
+	logger.Log.Info().Msg("Bước 7: Đang kiểm tra số dư tài khoản...")
 	balanceResult, err := cli.GetMemberBalance()
 	if err != nil {
-		fmt.Printf("Lỗi khi kiểm tra số dư: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi kiểm tra số dư")
 		os.Exit(1)
 	}
-	
-	// Hiển thị kết quả thô cho debug
-	fmt.Printf("- Kết quả số dư thô: %s\n", balanceResult)
-	
+
 	// Phân tích kết quả số dư
 	var balanceResponse BalanceResponse
 	err = json.Unmarshal([]byte(balanceResult), &balanceResponse)
 	if err != nil {
-		fmt.Printf("Lỗi khi parse kết quả số dư: %v\nDữ liệu: %s\n", err, balanceResult)
-		os.Exit(1)
+		logger.Log.Error().Err(err).Msg("Lỗi khi parse kết quả số dư")
+	} else {
+		logger.Log.Info().Float64("balance", balanceResponse.Data.WalletData.BalanceAmount).Msg("- Số dư tài khoản")
 	}
-	
-	// Hiển thị thông tin số dư
-	fmt.Println("\n=== THÔNG TIN SỐ DƯ ===")
-	fmt.Printf("Số dư tài khoản: %d\n", int(balanceResponse.Data.WalletData.BalanceAmount))
-	
-	// === BƯỚC 8: KIỂM TRA QUYỀN TRUY CẬP LỊCH SỬ GIAO DỊCH ===
-	fmt.Println("\nBước 8: Đang kiểm tra quyền truy cập lịch sử giao dịch...")
+
+	// === BƯỚC 8: KIỂM TRA QUYỀN TRUY CẬP GIAO DỊCH ===
+	logger.Log.Info().Msg("Bước 8: Đang kiểm tra quyền truy cập giao dịch...")
 	accessResult, err := cli.CheckTransactionAccess()
 	if err != nil {
-		fmt.Printf("Lỗi khi kiểm tra quyền truy cập: %v\n", err)
+		logger.Log.Error().Err(err).Msg("Lỗi khi kiểm tra quyền truy cập giao dịch")
 		os.Exit(1)
 	}
-	
-	// Hiển thị kết quả thô cho debug
-	fmt.Printf("- Kết quả kiểm tra quyền truy cập: %s\n", accessResult)
-	
-	// Phân tích kết quả kiểm tra quyền truy cập
+
+	// Phân tích kết quả quyền truy cập
 	var accessResponse TransactionAccessResponse
 	err = json.Unmarshal([]byte(accessResult), &accessResponse)
 	if err != nil {
-		fmt.Printf("Lỗi khi parse kết quả quyền truy cập: %v\n", err)
-		os.Exit(1)
-	}
-	
-	// Kiểm tra quyền truy cập
-	if !accessResponse.Data.IsOpen {
-		fmt.Println("- Không có quyền truy cập lịch sử giao dịch!")
-		fmt.Println("\n=== HOÀN THÀNH ===")
-		os.Exit(0)
-	}
-	
-	fmt.Printf("- Có quyền truy cập lịch sử giao dịch (Giới hạn: %d)\n", accessResponse.Data.LimitCount)
-	
-	// === BƯỚC 9: LẤY LỊCH SỬ GIAO DỊCH ===
-	fmt.Println("\nBước 9: Đang lấy lịch sử giao dịch...")
-	historyResult, err := cli.GetTransactionHistory()
-	if err != nil {
-		fmt.Printf("Lỗi khi lấy lịch sử giao dịch: %v\n", err)
-		os.Exit(1)
-	}
-	
-	// Hiển thị kết quả thô cho debug (chỉ phần đầu vì quá dài)
-	shortResult := historyResult
-	if len(historyResult) > 200 {
-		shortResult = historyResult[:200] + "..."
-	}
-	fmt.Printf("- Kết quả lịch sử giao dịch (đã rút gọn): %s\n", shortResult)
-	
-	// Phân tích kết quả lịch sử giao dịch
-	var historyResponse TransactionHistoryResponse
-	err = json.Unmarshal([]byte(historyResult), &historyResponse)
-	if err != nil {
-		fmt.Printf("Lỗi khi parse kết quả lịch sử giao dịch: %v\n", err)
-		os.Exit(1)
-	}
-	
-	// Tìm giao dịch nạp tiền gần nhất (TransType = 1 là nạp tiền)
-	var latestDeposit *struct {
-		TransactionNumber  string  `json:"TransactionNumber"`
-		CreateTime         string  `json:"CreateTime"`
-		TransType          int     `json:"TransType"`
-		TransContent       int     `json:"TransContent"`
-		TransactionAmount  float64 `json:"TransactionAmount"`
-		DealType_Sum       int     `json:"DealType_Sum"`
-		BalanceAmount      float64 `json:"BalanceAmount"`
-		PayNumber          string  `json:"PayNumber"`
-		PaywayID           string  `json:"PaywayID"`
-	}
-	
-	for _, transaction := range historyResponse.Data.Data {
-		// Kiểm tra nếu là giao dịch nạp tiền (TransType = 1)
-		if transaction.TransType == 1 {
-			latestDeposit = &transaction
-			break
-		}
-	}
-	
-	// Hiển thị thông tin giao dịch nạp tiền gần nhất
-	fmt.Println("\n=== GIAO DỊCH NẠP TIỀN GẦN NHẤT ===")
-	if latestDeposit != nil {
-		// Chuyển đổi thời gian từ UTC sang múi giờ HCM (+7)
-		timeStr := latestDeposit.CreateTime
-		// Loại bỏ phần mili giây nếu có
-		timeStr = strings.Split(timeStr, ".")[0]
-		// Parse thời gian
-		t, err := time.Parse("2006-01-02T15:04:05", timeStr)
-		if err != nil {
-			fmt.Printf("Lỗi khi parse thời gian: %v\n", err)
-			// Sử dụng thời gian gốc nếu lỗi
-			fmt.Printf("Thời gian: %s\n", latestDeposit.CreateTime)
-		} else {
-			// Chuyển đổi sang múi giờ HCM (+7)
-			t = t.Add(7 * time.Hour)
-			fmt.Printf("Thời gian: %s\n", t.Format("02/01/2006 15:04:05"))
-		}
-		
-		fmt.Printf("Số tiền: %d\n", int(latestDeposit.TransactionAmount))
-		fmt.Printf("Số dư sau giao dịch: %d\n", int(latestDeposit.BalanceAmount))
-		fmt.Printf("Mã giao dịch: %s\n", latestDeposit.TransactionNumber)
-		fmt.Printf("Phương thức: %s\n", latestDeposit.PaywayID)
+		logger.Log.Error().Err(err).Msg("Lỗi khi parse kết quả quyền truy cập")
 	} else {
-		fmt.Println("Không tìm thấy giao dịch nạp tiền nào!")
+		if accessResponse.Data.IsOpen {
+			logger.Log.Info().Int("limitCount", accessResponse.Data.LimitCount).Msg("- Có quyền truy cập giao dịch")
+
+			// === BƯỚC 9: LẤY LỊCH SỬ GIAO DỊCH ===
+			logger.Log.Info().Msg("Bước 9: Đang lấy lịch sử giao dịch...")
+			historyResult, err := cli.GetTransactionHistory()
+			if err != nil {
+				logger.Log.Error().Err(err).Msg("Lỗi khi lấy lịch sử giao dịch")
+				os.Exit(1)
+			}
+
+			// Phân tích kết quả lịch sử giao dịch
+			var historyResponse TransactionHistoryResponse
+			err = json.Unmarshal([]byte(historyResult), &historyResponse)
+			if err != nil {
+				logger.Log.Error().Err(err).Msg("Lỗi khi parse kết quả lịch sử giao dịch")
+			} else {
+				transactionCount := len(historyResponse.Data.Data)
+				logger.Log.Info().Int("count", transactionCount).Msg("- Tìm thấy giao dịch")
+
+				// Hiển thị các giao dịch gần nhất
+				if transactionCount > 0 {
+					maxShow := min(transactionCount, 5) // Tối đa 5 giao dịch gần nhất
+					for i := 0; i < maxShow; i++ {
+						transaction := historyResponse.Data.Data[i]
+						logger.Log.Info().
+							Str("txCode", transaction.TransactionNumber).
+							Str("time", transaction.CreateTime).
+							Int("type", transaction.TransType).
+							Float64("amount", transaction.TransactionAmount).
+							Float64("balance", transaction.BalanceAmount).
+							Msg(fmt.Sprintf("     Giao dịch %d", i+1))
+					}
+				}
+			}
+		} else {
+			logger.Log.Info().Msg("- Không có quyền truy cập giao dịch")
+		}
 	}
 
-	fmt.Println("\n=== HOÀN THÀNH ===")
-} 
+	logger.Log.Info().Msg("Hoàn thành tất cả các bước!")
+}
