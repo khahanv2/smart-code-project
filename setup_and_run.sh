@@ -29,7 +29,7 @@ echo -e "${GREEN}2. Tạo lại file main.go...${NC}"
 cd "$WEB_DIR"
 
 # Sao lưu file cũ
-cp main.go main.go.original.bak
+cp main.go main.go.original.bak || true
 
 # Tạo file mới hoàn toàn
 cat > main.go << 'EOF'
@@ -114,8 +114,17 @@ func main() {
 	// Phục vụ file tĩnh
 	r.Static("/uploads", "./uploads")
 	r.Static("/results", "./results")
-	r.Static("/", "./frontend/build")
-
+	
+	// Phục vụ static assets từ React build
+	r.Static("/static", "./frontend/build/static")
+	
+	// Phục vụ các file root như favicon, manifest
+	r.StaticFile("/favicon.ico", "./frontend/build/favicon.ico")
+	r.StaticFile("/manifest.json", "./frontend/build/manifest.json")
+	r.StaticFile("/logo192.png", "./frontend/build/logo192.png")
+	r.StaticFile("/logo512.png", "./frontend/build/logo512.png")
+	
+	// Xử lý tất cả các route còn lại bằng index.html
 	r.NoRoute(func(c *gin.Context) {
 		c.File("./frontend/build/index.html")
 	})
