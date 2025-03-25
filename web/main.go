@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
-	"github.com/bongg/autologin/internal/accountprocessor"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -20,239 +20,103 @@ import (
 
 // Job represents a processing job
 type Job struct {
-	ID              string                             `json:"id"`
-	Status          string                             `json:"status"` // "pending", "processing", "completed", "failed"
-	UploadedFile    string                             `json:"uploadedFile"`
-	ProxyFile       string                             `json:"proxyFile"`
-	Workers         int                                `json:"workers"`
-	StartTime       time.Time                          `json:"startTime"`
-	EndTime         time.Time                          `json:"endTime"`
-	SuccessFile     string                             `json:"successFile"`
-	FailFile        string                             `json:"failFile"`
-	Progress        float64                            `json:"progress"`
-	Processor       *accountprocessor.AccountProcessor `json:"-"`
-	TotalAccounts   int                                `json:"totalAccounts"`
-	SuccessCount    int                                `json:"successCount"`
-	FailCount       int                                `json:"failCount"`
-	ProcessingCount int                                `json:"processingCount"`
+	ID              string      `json:"id"`
+	Status          string      `json:"status"` // "pending", "processing", "completed", "failed"
+	UploadedFile    string      `json:"uploadedFile"`
+	ProxyFile       string      `json:"proxyFile"`
+	Workers         int         `json:"workers"`
+	StartTime       time.Time   `json:"startTime"`
+	EndTime         time.Time   `json:"endTime"`
+	SuccessFile     string      `json:"successFile"`
+	FailFile        string      `json:"failFile"`
+	Progress        float64     `json:"progress"`
+	Processor       interface{} `json:"-"`
+	TotalAccounts   int         `json:"totalAccounts"`
+	SuccessCount    int         `json:"successCount"`
+	FailCount       int         `json:"failCount"`
+	ProcessingCount int         `json:"processingCount"`
 }
 
-// JobManager manages all jobs
-type JobManager struct {
-	jobs       map[string]*Job
-	clients    map[string][]*websocket.Conn
-	mutex      sync.Mutex
-	uploadsDir string
-	resultsDir string
-}
+var (
+	jobs        = make(map[string]*Job)
+	jobsMutex   sync.RWMutex
+	clients     = make(map[string][]*websocket.Conn)
+	clientMutex sync.RWMutex
+	upgrader    = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+)
 
-// NewJobManager creates a new job manager
-func NewJobManager() *JobManager {
-	// Ensure directories exist
-	uploadsDir := "uploads"
-	resultsDir := "results"
+func main() {
+	// Tạo các thư mục cần thiết
+	os.MkdirAll("uploads", os.ModePerm)
+	os.MkdirAll("results", os.ModePerm)
 
-	if _, err := os.Stat(uploadsDir); os.IsNotExist(err) {
-		os.Mkdir(uploadsDir, 0755)
+	r := gin.Default()
+
+	// Cấu hình CORS
+	r.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+
+	// Endpoint API
+	api := r.Group("/api")
+	{
+		api.GET("/jobs", getJobs)
+		api.POST("/jobs", createJob)
+		api.GET("/jobs/:id", getJob)
+		api.GET("/jobs/:id/download/:type", downloadResult)
+		api.GET("/ws/jobs/:id", wsJobStatus)
 	}
 
-	if _, err := os.Stat(resultsDir); os.IsNotExist(err) {
-		os.Mkdir(resultsDir, 0755)
-	}
+	// Phục vụ file tĩnh
+	r.Static("/uploads", "./uploads")
+	r.Static("/results", "./results")
 
-	return &JobManager{
-		jobs:       make(map[string]*Job),
-		clients:    make(map[string][]*websocket.Conn),
-		uploadsDir: uploadsDir,
-		resultsDir: resultsDir,
-	}
-}
+	// Phục vụ static assets từ React build
+	r.Static("/static", "./frontend/build/static")
 
-// AddJob adds a new job
-func (jm *JobManager) AddJob(job *Job) {
-	jm.mutex.Lock()
-	defer jm.mutex.Unlock()
-	jm.jobs[job.ID] = job
-}
+	// Phục vụ các file root như favicon, manifest
+	r.StaticFile("/favicon.ico", "./frontend/build/favicon.ico")
+	r.StaticFile("/manifest.json", "./frontend/build/manifest.json")
+	r.StaticFile("/logo192.png", "./frontend/build/logo192.png")
+	r.StaticFile("/logo512.png", "./frontend/build/logo512.png")
 
-// GetJob returns a job by ID
-func (jm *JobManager) GetJob(id string) (*Job, bool) {
-	jm.mutex.Lock()
-	defer jm.mutex.Unlock()
-	job, exists := jm.jobs[id]
-	return job, exists
-}
-
-// UpdateJob updates a job
-func (jm *JobManager) UpdateJob(job *Job) {
-	jm.mutex.Lock()
-	defer jm.mutex.Unlock()
-	jm.jobs[job.ID] = job
-	jm.notifyClients(job.ID, job)
-}
-
-// AddClient adds a WebSocket client for a job
-func (jm *JobManager) AddClient(jobID string, conn *websocket.Conn) {
-	jm.mutex.Lock()
-	defer jm.mutex.Unlock()
-	jm.clients[jobID] = append(jm.clients[jobID], conn)
-}
-
-// RemoveClient removes a WebSocket client
-func (jm *JobManager) RemoveClient(jobID string, conn *websocket.Conn) {
-	jm.mutex.Lock()
-	defer jm.mutex.Unlock()
-	clients := jm.clients[jobID]
-	for i, c := range clients {
-		if c == conn {
-			jm.clients[jobID] = append(clients[:i], clients[i+1:]...)
-			break
-		}
-	}
-}
-
-// notifyClients sends an update to all clients for a job
-func (jm *JobManager) notifyClients(jobID string, data interface{}) {
-	clients := jm.clients[jobID]
-	for _, conn := range clients {
-		err := conn.WriteJSON(data)
-		if err != nil {
-			log.Printf("Error sending to WebSocket: %v", err)
-			conn.Close()
-			jm.RemoveClient(jobID, conn)
-		}
-	}
-}
-
-// Global JobManager
-var jobManager *JobManager
-
-// WebSocket upgrader
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all origins in development
-	},
-}
-
-// Handler for uploading Excel file
-func handleUpload(c *gin.Context) {
-	// Get form values
-	workersStr := c.PostForm("workers")
-	workers := 1
-	if workersStr != "" {
-		fmt.Sscanf(workersStr, "%d", &workers)
-	}
-	if workers < 1 {
-		workers = 1
-	}
-
-	// Handle Excel file upload
-	file, header, err := c.Request.FormFile("file")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No file uploaded"})
-		return
-	}
-	defer file.Close()
-
-	// Generate unique ID for the job
-	jobID := uuid.New().String()
-
-	// Save the uploaded file
-	uploadPath := filepath.Join(jobManager.uploadsDir, jobID+"_"+header.Filename)
-	out, err := os.Create(uploadPath)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
-		return
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, file)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
-		return
-	}
-
-	// Check for proxy file
-	var proxyPath string
-	proxyFile, proxyHeader, err := c.Request.FormFile("proxy")
-	if err == nil && proxyFile != nil {
-		defer proxyFile.Close()
-		proxyPath = filepath.Join(jobManager.uploadsDir, jobID+"_"+proxyHeader.Filename)
-		proxyOut, err := os.Create(proxyPath)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save proxy file"})
-			return
-		}
-		defer proxyOut.Close()
-		_, err = io.Copy(proxyOut, proxyFile)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save proxy file"})
-			return
-		}
-	}
-
-	// Create a new job
-	job := &Job{
-		ID:           jobID,
-		Status:       "pending",
-		UploadedFile: uploadPath,
-		ProxyFile:    proxyPath,
-		Workers:      workers,
-		StartTime:    time.Now(),
-		Processor:    accountprocessor.NewAccountProcessor(),
-	}
-
-	// Add job to manager
-	jobManager.AddJob(job)
-
-	// Start processing in background
-	go processJob(job)
-
-	c.JSON(http.StatusOK, gin.H{
-		"jobId":  jobID,
-		"status": "pending",
+	// Xử lý tất cả các route còn lại bằng index.html
+	r.NoRoute(func(c *gin.Context) {
+		c.File("./frontend/build/index.html")
 	})
+
+	fmt.Println("Server started on :8080")
+	r.Run(":8080")
 }
 
-// Handler for WebSocket connections
-func handleWebSocket(c *gin.Context) {
-	jobID := c.Param("id")
+func getJobs(c *gin.Context) {
+	jobsMutex.RLock()
+	defer jobsMutex.RUnlock()
 
-	job, exists := jobManager.GetJob(jobID)
-	if !exists {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
-		return
+	jobsList := make([]*Job, 0, len(jobs))
+	for _, job := range jobs {
+		jobsList = append(jobsList, job)
 	}
 
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		log.Printf("Failed to upgrade to WebSocket: %v", err)
-		return
-	}
-
-	// Add client to job
-	jobManager.AddClient(jobID, conn)
-
-	// Send initial job data
-	conn.WriteJSON(job)
-
-	// Listen for close
-	go func() {
-		for {
-			_, _, err := conn.ReadMessage()
-			if err != nil {
-				jobManager.RemoveClient(jobID, conn)
-				break
-			}
-		}
-	}()
+	c.JSON(http.StatusOK, jobsList)
 }
 
-// Handler for job status
-func getJobStatus(c *gin.Context) {
-	jobID := c.Param("id")
+func getJob(c *gin.Context) {
+	id := c.Param("id")
 
-	job, exists := jobManager.GetJob(jobID)
+	jobsMutex.RLock()
+	job, exists := jobs[id]
+	jobsMutex.RUnlock()
+
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
 		return
@@ -261,12 +125,100 @@ func getJobStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
-// Handler for downloading result files
-func handleDownload(c *gin.Context) {
-	jobID := c.Param("id")
-	fileType := c.Param("type") // "success" or "fail"
+func createJob(c *gin.Context) {
+	// Parse form
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid form data"})
+		return
+	}
 
-	job, exists := jobManager.GetJob(jobID)
+	// Get workers count
+	workersStr := c.Request.FormValue("workers")
+	workers, err := strconv.Atoi(workersStr)
+	if err != nil || workers <= 0 {
+		workers = 10 // Default value
+	}
+
+	// Excel file
+	excelFile, header, err := c.Request.FormFile("excelFile")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Excel file is required"})
+		return
+	}
+	defer excelFile.Close()
+
+	// Create uploads directory if not exists
+	if err := os.MkdirAll("uploads", os.ModePerm); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create uploads directory"})
+		return
+	}
+
+	// Save Excel file
+	excelFilename := filepath.Join("uploads", header.Filename)
+	out, err := os.Create(excelFilename)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+		return
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, excelFile)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save file"})
+		return
+	}
+
+	// Check for proxy file (optional)
+	var proxyFilename string
+	if proxyFile, header, err := c.Request.FormFile("proxyFile"); err == nil {
+		defer proxyFile.Close()
+		proxyFilename = filepath.Join("uploads", header.Filename)
+		out, err := os.Create(proxyFilename)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save proxy file"})
+			return
+		}
+		defer out.Close()
+
+		_, err = io.Copy(out, proxyFile)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save proxy file"})
+			return
+		}
+	}
+
+	// Create new job
+	job := &Job{
+		ID:           uuid.New().String(),
+		Status:       "pending",
+		UploadedFile: excelFilename,
+		ProxyFile:    proxyFilename,
+		Workers:      workers,
+		StartTime:    time.Now(),
+		Progress:     0,
+		Processor:    nil,
+	}
+
+	// Store job
+	jobsMutex.Lock()
+	jobs[job.ID] = job
+	jobsMutex.Unlock()
+
+	// Start processing in background
+	go processJob(job)
+
+	// Return job ID
+	c.JSON(http.StatusOK, gin.H{"id": job.ID})
+}
+
+func downloadResult(c *gin.Context) {
+	id := c.Param("id")
+	fileType := c.Param("type")
+
+	jobsMutex.RLock()
+	job, exists := jobs[id]
+	jobsMutex.RUnlock()
+
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
 		return
@@ -290,45 +242,88 @@ func handleDownload(c *gin.Context) {
 	c.File(filePath)
 }
 
-// Handler for listing all jobs
-func listJobs(c *gin.Context) {
-	jobManager.mutex.Lock()
-	defer jobManager.mutex.Unlock()
+func wsJobStatus(c *gin.Context) {
+	id := c.Param("id")
 
-	jobs := make([]Job, 0, len(jobManager.jobs))
-	for _, job := range jobManager.jobs {
-		jobs = append(jobs, *job)
+	jobsMutex.RLock()
+	_, exists := jobs[id]
+	jobsMutex.RUnlock()
+
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Job not found"})
+		return
 	}
 
-	c.JSON(http.StatusOK, jobs)
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("Failed to set websocket upgrade: %v", err)
+		return
+	}
+
+	// Register client
+	clientMutex.Lock()
+	if clients[id] == nil {
+		clients[id] = make([]*websocket.Conn, 0)
+	}
+	clients[id] = append(clients[id], conn)
+	clientMutex.Unlock()
+
+	// Remove client on disconnect
+	conn.SetCloseHandler(func(code int, text string) error {
+		clientMutex.Lock()
+		for i, client := range clients[id] {
+			if client == conn {
+				clients[id] = append(clients[id][:i], clients[id][i+1:]...)
+				break
+			}
+		}
+		clientMutex.Unlock()
+		return nil
+	})
+
+	// Keep connection open
+	for {
+		_, _, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+	}
 }
 
-// Background processor for jobs
 func processJob(job *Job) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in job %s: %v", job.ID, r)
-			job.Status = "failed"
-			jobManager.UpdateJob(job)
-		}
-	}()
-
-	// Update job status
+	// Mark job as processing
+	jobsMutex.Lock()
 	job.Status = "processing"
-	jobManager.UpdateJob(job)
+	jobsMutex.Unlock()
 
-	// Callback function to update progress
+	// Broadcast job update
+	broadcastJobUpdate(job)
+
+	// Setup progress callback
 	onProgress := func(progress float64, totalCount, successCount, failCount int) {
+		jobsMutex.Lock()
 		job.Progress = progress
 		job.TotalAccounts = totalCount
 		job.SuccessCount = successCount
 		job.FailCount = failCount
-		job.ProcessingCount = totalCount - successCount - failCount
-		jobManager.UpdateJob(job)
+		jobsMutex.Unlock()
+
+		broadcastJobUpdate(job)
 	}
 
+	// Process
+	defer func() {
+		if r := recover(); r != nil {
+			log.Println("Recovered from panic:", r)
+			jobsMutex.Lock()
+			job.Status = "failed"
+			job.EndTime = time.Now()
+			jobsMutex.Unlock()
+			broadcastJobUpdate(job)
+		}
+	}()
+
 	// Sử dụng SimulateProcessing thay vì ProcessExcelFile cho demo
-	// Trong production, hãy dùng ProcessExcelFile
 	successFile, failFile, err := SimulateProcessing(
 		job.UploadedFile,
 		job.ProxyFile,
@@ -337,90 +332,30 @@ func processJob(job *Job) {
 		onProgress,
 	)
 
+	jobsMutex.Lock()
+	defer jobsMutex.Unlock()
+
 	if err != nil {
-		log.Printf("Error processing job %s: %v", job.ID, err)
 		job.Status = "failed"
-		jobManager.UpdateJob(job)
-		return
+		log.Printf("Error processing job: %v", err)
+	} else {
+		job.Status = "completed"
+		job.SuccessFile = successFile
+		job.FailFile = failFile
 	}
 
-	job.Status = "completed"
 	job.EndTime = time.Now()
-	job.SuccessFile = successFile
-	job.FailFile = failFile
-	job.Progress = 1.0
-
-	// Cập nhật số liệu từ processor
-	job.TotalAccounts = job.Processor.GetTotalAccounts()
-	job.SuccessCount = job.Processor.GetSuccessAccounts()
-	job.FailCount = job.Processor.GetFailedAccounts()
-	job.ProcessingCount = 0
-
-	// Update final job status
-	jobManager.UpdateJob(job)
+	broadcastJobUpdate(job)
 }
 
-// Custom WebSocket logger that integrates with the job system
-type WebSocketLogger struct {
-	JobID string
-}
+func broadcastJobUpdate(job *Job) {
+	// Create a copy for broadcasting
+	jobData, _ := json.Marshal(job)
 
-func (l *WebSocketLogger) Write(p []byte) (n int, err error) {
-	// Try to parse the log message
-	var logData map[string]interface{}
-	if err := json.Unmarshal(p, &logData); err == nil {
-		// Send to WebSocket clients
-		jobManager.notifyClients(l.JobID, gin.H{
-			"type": "log",
-			"data": logData,
-		})
-	}
+	clientMutex.RLock()
+	defer clientMutex.RUnlock()
 
-	// Also write to standard output
-	return os.Stdout.Write(p)
-}
-
-func main() {
-	// Initialize the job manager
-	jobManager = NewJobManager()
-
-	// Create Gin router
-	router := gin.Default()
-
-	// CORS setup
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-	}))
-
-	// API routes
-	api := router.Group("/api")
-	{
-		api.POST("/upload", handleUpload)
-		api.GET("/jobs", listJobs)
-		api.GET("/job/:id", getJobStatus)
-		api.GET("/download/:type/:id", handleDownload)
-	}
-
-	// WebSocket route
-	router.GET("/ws/:id", handleWebSocket)
-
-	// Serve static files from the frontend folder
-	router.StaticFS("/app", http.Dir("./frontend/build"))
-
-	// Fallback to the SPA index file
-	router.NoRoute(func(c *gin.Context) {
-		if c.Request.Method == http.MethodGet {
-			c.File("./frontend/build/index.html")
-		}
-	})
-
-	// Start the server
-	log.Println("Starting server on http://localhost:8080")
-	if err := router.Run(":8080"); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	for _, conn := range clients[job.ID] {
+		conn.WriteMessage(websocket.TextMessage, jobData)
 	}
 }
