@@ -24,8 +24,40 @@ echo -e "${GREEN}1. Biên dịch batch_login...${NC}"
 cd "$AUTOLOGIN_DIR"
 go build -o batch_login ./cmd/batch_login/main.go
 
-# 2. Tạo thư mục public và file index.html nếu chưa tồn tại
-echo -e "${GREEN}2. Chuẩn bị thư mục public...${NC}"
+# 2. Sửa lỗi module và import paths
+echo -e "${GREEN}2. Cập nhật module paths...${NC}"
+# Chuyển đến thư mục web
+cd "$WEB_DIR"
+echo -e "${BLUE}Đang cập nhật go.mod...${NC}"
+
+# Cập nhật require trong go.mod để trỏ đến đúng module path
+grep -q "replace github.com/khahanv2/smart-code-project" go.mod
+if [ $? -ne 0 ]; then
+    echo -e "replace github.com/khahanv2/smart-code-project => ../.." >> go.mod
+    echo -e "${BLUE}Đã thêm replace directive vào go.mod${NC}"
+fi
+
+# Chạy go mod tidy để cập nhật dependencies
+echo -e "${BLUE}Đang chạy go mod tidy...${NC}"
+go mod tidy
+
+# Sửa lỗi import trong processor.go
+processor_file="$WEB_DIR/processor.go"
+if [ -f "$processor_file" ]; then
+    echo -e "${BLUE}Đang kiểm tra import accountprocessor...${NC}"
+    
+    # Sửa import path
+    sed -i 's|github.com/bongg/autologin/internal/accountprocessor|github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor|g' "$processor_file"
+    sed -i 's|github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor|github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor|g' "$processor_file"
+    
+    echo -e "${BLUE}Đã cập nhật import paths${NC}"
+else
+    echo -e "${RED}Không tìm thấy file processor.go${NC}"
+    exit 1
+fi
+
+# 3. Tạo thư mục public và file index.html nếu chưa tồn tại
+echo -e "${GREEN}3. Chuẩn bị thư mục public...${NC}"
 mkdir -p "$FRONTEND_DIR/public"
 if [ ! -f "$FRONTEND_DIR/public/index.html" ]; then
     echo -e "${BLUE}Tạo file index.html...${NC}"
@@ -45,27 +77,6 @@ if [ ! -f "$FRONTEND_DIR/public/index.html" ]; then
   </body>
 </html>
 EOF
-fi
-
-# 3. Sửa lỗi SimulateProcessing trong main.go
-echo -e "${GREEN}3. Sửa lỗi SimulateProcessing...${NC}"
-processor_file="$WEB_DIR/processor.go"
-
-# Chuyển vào thư mục web trước khi sửa file
-cd "$WEB_DIR"
-
-# Kiểm tra file processor.go
-if [ -f "$processor_file" ]; then
-    echo -e "${BLUE}Đang kiểm tra import accountprocessor...${NC}"
-    grep -q "github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor" "$processor_file"
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${BLUE}Sửa import path...${NC}"
-        sed -i 's|github.com/bongg/autologin/internal/accountprocessor|github.com/khahanv2/smart-code-project/autologin/internal/accountprocessor|g' "$processor_file"
-    fi
-else
-    echo -e "${RED}Không tìm thấy file processor.go${NC}"
-    exit 1
 fi
 
 # 4. Cài đặt và build frontend
